@@ -1,0 +1,259 @@
+import {
+  APIGatewayProxyEvent,
+  APIGatewayProxyResult,
+} from "aws-lambda";
+import {
+  validateWebhookSignature,
+  getInstallationIdFromPayload,
+  getJitRunnerToken,
+  GitHubAppConfig,
+} from "./lib/github-app";
+import { createRunnerState, getRunnerState, updateRunnerState } from "./lib/state";
+import { resolveRunnerConfig } from "./lib/routing";
+import { provisionRunner } from "./lib/provisioner";
+import {
+  SecretsManagerClient,
+  GetSecretValueCommand,
+} from "@aws-sdk/client-secrets-manager";
+
+const secretsClient = new SecretsManagerClient({});
+
+// Environment variables
+const GITHUB_APP_ID = process.env.GITHUB_APP_ID ?? "";
+const GITHUB_SERVER_URL = process.env.GITHUB_SERVER_URL ?? "";
+const PRIVATE_KEY_SECRET_ARN = process.env.PRIVATE_KEY_SECRET_ARN ?? "";
+const WEBHOOK_SECRET_ARN = process.env.WEBHOOK_SECRET_ARN ?? "";
+const LAUNCH_TEMPLATE_ID = process.env.LAUNCH_TEMPLATE_ID ?? "";
+const SUBNET_IDS = (process.env.SUBNET_IDS ?? "").split(",").filter(Boolean);
+const SECURITY_GROUP_IDS = (process.env.SECURITY_GROUP_IDS ?? "")
+  .split(",")
+  .filter(Boolean);
+
+// Cache for secrets
+let cachedPrivateKey: string | null = null;
+let cachedWebhookSecret: string | null = null;
+
+async function getPrivateKey(): Promise<string> {
+  if (cachedPrivateKey) return cachedPrivateKey;
+
+  const response = await secretsClient.send(
+    new GetSecretValueCommand({ SecretId: PRIVATE_KEY_SECRET_ARN })
+  );
+  cachedPrivateKey = response.SecretString ?? "";
+  return cachedPrivateKey;
+}
+
+async function getWebhookSecret(): Promise<string> {
+  if (cachedWebhookSecret) return cachedWebhookSecret;
+
+  const response = await secretsClient.send(
+    new GetSecretValueCommand({ SecretId: WEBHOOK_SECRET_ARN })
+  );
+  cachedWebhookSecret = response.SecretString ?? "";
+  return cachedWebhookSecret;
+}
+
+interface WorkflowJobPayload {
+  action: "queued" | "in_progress" | "completed" | "waiting";
+  workflow_job: {
+    id: number;
+    run_id: number;
+    workflow_name: string;
+    labels: string[];
+    runner_id?: number;
+    runner_name?: string;
+  };
+  repository: {
+    full_name: string;
+  };
+  installation?: {
+    id: number;
+  };
+}
+
+export async function handler(
+  event: APIGatewayProxyEvent
+): Promise<APIGatewayProxyResult> {
+  console.log("Received webhook event");
+
+  try {
+    // Validate webhook signature
+    const signature = event.headers["x-hub-signature-256"];
+    const webhookSecret = await getWebhookSecret();
+
+    if (!validateWebhookSignature(event.body ?? "", signature, webhookSecret)) {
+      console.error("Invalid webhook signature");
+      return {
+        statusCode: 401,
+        body: JSON.stringify({ error: "Invalid signature" }),
+      };
+    }
+
+    // Parse payload
+    const payload = JSON.parse(event.body ?? "{}") as WorkflowJobPayload;
+    const eventType = event.headers["x-github-event"];
+
+    // Only handle workflow_job events
+    if (eventType !== "workflow_job") {
+      console.log(`Ignoring event type: ${eventType}`);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ message: "Event ignored" }),
+      };
+    }
+
+    // Only handle queued action
+    if (payload.action !== "queued") {
+      console.log(`Ignoring action: ${payload.action}`);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ message: "Action ignored" }),
+      };
+    }
+
+    const jobId = String(payload.workflow_job.id);
+    const labels = payload.workflow_job.labels;
+    const repoFullName = payload.repository.full_name;
+    const workflowName = payload.workflow_job.workflow_name;
+
+    console.log(`Processing job ${jobId} for ${repoFullName}`);
+
+    // Check if we should handle this job (has spotrunner label)
+    const routingResult = await resolveRunnerConfig(labels);
+    if (!routingResult) {
+      console.log(`No matching config for labels: ${labels.join(", ")}`);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ message: "No matching runner config" }),
+      };
+    }
+
+    const { config, parsedLabel, resources } = routingResult;
+
+    // Check if AMI is ready (not pending or empty)
+    if (!config.ami || config.ami === "pending") {
+      console.log(`AMI not ready for preset ${parsedLabel.config} (ami=${config.ami})`);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ message: "Runner image not yet available" }),
+      };
+    }
+
+    // Idempotency check - don't provision if already handling this job
+    const existingState = await getRunnerState(jobId);
+    if (existingState) {
+      console.log(`Job ${jobId} already being handled (status: ${existingState.status})`);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ message: "Job already being handled" }),
+      };
+    }
+
+    // Create pending state record (idempotent via conditional write)
+    const created = await createRunnerState({
+      jobId,
+      status: "pending",
+      repoFullName,
+      workflowName,
+      labels,
+      runnerConfig: parsedLabel.config,
+    });
+
+    if (!created) {
+      // Another invocation beat us to it
+      console.log(`Job ${jobId} already claimed by another handler`);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ message: "Job already claimed" }),
+      };
+    }
+
+    try {
+      // Get GitHub App config
+      const privateKey = await getPrivateKey();
+      const installationId = getInstallationIdFromPayload(
+        payload as unknown as Record<string, unknown>
+      );
+
+      if (!installationId) {
+        throw new Error("Missing installation ID in webhook payload");
+      }
+
+      const appConfig: GitHubAppConfig = {
+        appId: GITHUB_APP_ID,
+        privateKey,
+        webhookSecret,
+        serverUrl: GITHUB_SERVER_URL,
+      };
+
+      // Update state to provisioning
+      await updateRunnerState(jobId, { status: "provisioning" });
+
+      // Get JIT runner token
+      console.log(`Requesting JIT token for ${repoFullName}`);
+      const jitResponse = await getJitRunnerToken(
+        appConfig,
+        installationId,
+        repoFullName,
+        config.labels
+      );
+
+      // Provision the runner
+      console.log(`Provisioning runner for job ${jobId}`);
+      const result = await provisionRunner({
+        jobId,
+        repoFullName,
+        workflowName,
+        labels,
+        config,
+        resources,
+        jitConfig: jitResponse.runner_jit_config,
+        launchTemplateId: LAUNCH_TEMPLATE_ID,
+        subnetIds: SUBNET_IDS,
+        securityGroupIds: SECURITY_GROUP_IDS,
+      });
+
+      // Update state with instance ID
+      await updateRunnerState(jobId, {
+        instanceId: result.instanceId,
+        status: "running",
+      });
+
+      console.log(
+        `Provisioned ${result.isSpot ? "spot" : "on-demand"} instance ${result.instanceId} (${result.instanceType}) in ${result.availabilityZone}`
+      );
+
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          message: "Runner provisioned",
+          instanceId: result.instanceId,
+          instanceType: result.instanceType,
+          isSpot: result.isSpot,
+        }),
+      };
+    } catch (error) {
+      // Update state to failed
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      await updateRunnerState(jobId, {
+        status: "failed",
+        errorMessage,
+      });
+
+      console.error(`Failed to provision runner for job ${jobId}:`, error);
+
+      return {
+        statusCode: 500,
+        body: JSON.stringify({ error: "Failed to provision runner" }),
+      };
+    }
+  } catch (error) {
+    console.error("Webhook handler error:", error);
+
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: "Internal server error" }),
+    };
+  }
+}
