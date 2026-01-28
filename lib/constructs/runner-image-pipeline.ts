@@ -120,6 +120,13 @@ export class RunnerImagePipeline extends Construct {
       role: instanceRole,
     });
 
+    // Security group for build instances
+    const buildSecurityGroup = new ec2.SecurityGroup(this, "BuildSecurityGroup", {
+      vpc: props.vpc,
+      description: "Security group for Image Builder build instances",
+      allowAllOutbound: true, // Needed to download packages, Docker images, etc.
+    });
+
     // Component: Install Docker
     const dockerComponent = new imagebuilder.CfnComponent(this, "DockerComponent", {
       name: `${cdk.Stack.of(this).stackName}-${props.presetName}-docker`,
@@ -265,6 +272,7 @@ ${dockerPullCommands}
       instanceProfileName: instanceProfile.instanceProfileName,
       instanceTypes: buildInstanceTypes,
       subnetId: props.subnet.subnetId,
+      securityGroupIds: [buildSecurityGroup.securityGroupId],
       terminateInstanceOnFailure: true,
     });
 
