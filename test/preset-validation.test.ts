@@ -1,28 +1,25 @@
 import * as cdk from "aws-cdk-lib";
-import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { SpotRunnerStack } from "../lib/spot-runner-stack";
+import { SpotRunnerFoundationStack } from "../lib/foundation-stack";
 
-function createBaseProps(foundationStack: cdk.Stack) {
-  const vpc = new ec2.Vpc(foundationStack, "TestVpc", { maxAzs: 2, natGateways: 1 });
-  const runnerSecurityGroup = new ec2.SecurityGroup(foundationStack, "TestSG", {
-    vpc,
-    description: "Test security group",
-  });
+function createBaseProps(app: cdk.App) {
+  const foundation = new SpotRunnerFoundationStack(app, "FoundationStack");
   return {
-    vpc,
-    runnerSecurityGroup,
+    vpc: foundation.vpc,
+    runnerSecurityGroup: foundation.runnerSecurityGroup,
+    api: foundation.api,
+    apiRootResourceId: foundation.apiRootResourceId,
+    privateKeySecret: foundation.privateKeySecret,
+    webhookSecret: foundation.webhookSecret,
     githubServerUrl: "https://github.example.com",
     githubAppId: "123456",
-    githubAppPrivateKey: "-----BEGIN RSA PRIVATE KEY-----\nTEST\n-----END RSA PRIVATE KEY-----",
-    webhookSecret: "test-secret",
   };
 }
 
 describe("Preset Validation", () => {
   test("throws error when presets array is empty", () => {
     const app = new cdk.App();
-    const foundationStack = new cdk.Stack(app, "FoundationStack");
-    const baseProps = createBaseProps(foundationStack);
+    const baseProps = createBaseProps(app);
     expect(() => {
       new SpotRunnerStack(app, "TestStack", {
         ...baseProps,
@@ -33,8 +30,7 @@ describe("Preset Validation", () => {
 
   test("throws error for duplicate preset names", () => {
     const app = new cdk.App();
-    const foundationStack = new cdk.Stack(app, "FoundationStack");
-    const baseProps = createBaseProps(foundationStack);
+    const baseProps = createBaseProps(app);
     expect(() => {
       new SpotRunnerStack(app, "TestStack", {
         ...baseProps,
@@ -48,8 +44,7 @@ describe("Preset Validation", () => {
 
   test("throws error for invalid architecture", () => {
     const app = new cdk.App();
-    const foundationStack = new cdk.Stack(app, "FoundationStack");
-    const baseProps = createBaseProps(foundationStack);
+    const baseProps = createBaseProps(app);
     expect(() => {
       new SpotRunnerStack(app, "TestStack", {
         ...baseProps,
@@ -62,8 +57,7 @@ describe("Preset Validation", () => {
 
   test("accepts valid preset configuration", () => {
     const app = new cdk.App();
-    const foundationStack = new cdk.Stack(app, "FoundationStack");
-    const baseProps = createBaseProps(foundationStack);
+    const baseProps = createBaseProps(app);
     expect(() => {
       new SpotRunnerStack(app, "TestStack", {
         ...baseProps,
@@ -81,8 +75,7 @@ describe("Preset Validation", () => {
 
   test("accepts multiple presets with different architectures", () => {
     const app = new cdk.App();
-    const foundationStack = new cdk.Stack(app, "FoundationStack");
-    const baseProps = createBaseProps(foundationStack);
+    const baseProps = createBaseProps(app);
     expect(() => {
       new SpotRunnerStack(app, "TestStack", {
         ...baseProps,

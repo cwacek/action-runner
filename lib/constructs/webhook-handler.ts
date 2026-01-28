@@ -7,7 +7,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { Construct } from "constructs";
-import * as path from "path";
+import * as path from "node:path";
 
 export interface WebhookHandlerProps {
   /**
@@ -59,15 +59,24 @@ export interface WebhookHandlerProps {
    * SSM parameter prefix for runner configs.
    */
   readonly configPrefix: string;
+
+  /**
+   * API Gateway REST API from foundation stack.
+   */
+  readonly api: apigateway.RestApi;
+
+  /**
+   * Root resource ID of the API Gateway (for adding routes).
+   */
+  readonly apiRootResourceId: string;
 }
 
 /**
- * Lambda function and API Gateway for handling GitHub webhooks.
+ * Lambda function for handling GitHub webhooks.
+ * Adds a /webhook route to the provided API Gateway.
  */
 export class WebhookHandler extends Construct {
   public readonly lambda: lambda.IFunction;
-  public readonly api: apigateway.RestApi;
-  public readonly webhookUrl: string;
 
   constructor(scope: Construct, id: string, props: WebhookHandlerProps) {
     super(scope, id);
@@ -140,27 +149,43 @@ export class WebhookHandler extends Construct {
       })
     );
 
-    // Create API Gateway
-    this.api = new apigateway.RestApi(this, "Api", {
-      restApiName: "spot-runner-webhook",
-      description: "GitHub webhook endpoint for spot runners",
-      deployOptions: {
-        stageName: "prod",
-        throttlingRateLimit: 100,
-        throttlingBurstLimit: 200,
+    // Add webhook endpoint to the imported API Gateway
+    // Use Cfn-level constructs to avoid circular dependency when API is from another stack
+    const webhookResource = new apigateway.CfnResource(this, "WebhookResource", {
+      restApiId: props.api.restApiId,
+      parentId: props.apiRootResourceId,
+      pathPart: "webhook",
+    });
+
+    // Grant API Gateway permission to invoke the Lambda
+    this.lambda.addPermission("ApiGatewayInvoke", {
+      principal: new iam.ServicePrincipal("apigateway.amazonaws.com"),
+      sourceArn: `arn:aws:execute-api:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:${props.api.restApiId}/*/*/*`,
+    });
+
+    new apigateway.CfnMethod(this, "WebhookMethod", {
+      restApiId: props.api.restApiId,
+      resourceId: webhookResource.ref,
+      httpMethod: "POST",
+      authorizationType: "NONE",
+      integration: {
+        type: "AWS_PROXY",
+        integrationHttpMethod: "POST",
+        uri: `arn:aws:apigateway:${cdk.Stack.of(this).region}:lambda:path/2015-03-31/functions/${this.lambda.functionArn}/invocations`,
       },
     });
 
-    // Add webhook endpoint
-    const webhook = this.api.root.addResource("webhook");
-    webhook.addMethod("POST", new apigateway.LambdaIntegration(this.lambda));
+    // Force a new deployment when the method changes
+    const deployment = new apigateway.CfnDeployment(this, "WebhookDeployment", {
+      restApiId: props.api.restApiId,
+    });
+    deployment.addDependency(webhookResource);
 
-    this.webhookUrl = `${this.api.url}webhook`;
-
-    // Output the webhook URL
-    new cdk.CfnOutput(this, "WebhookUrl", {
-      value: this.webhookUrl,
-      description: "URL to configure in GitHub App webhook settings",
+    // Update the stage to use the new deployment
+    new apigateway.CfnStage(this, "WebhookStage", {
+      restApiId: props.api.restApiId,
+      stageName: "prod",
+      deploymentId: deployment.ref,
     });
   }
 }

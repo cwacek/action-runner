@@ -76,4 +76,64 @@ describe("SpotRunnerFoundationStack", () => {
 
     template.resourceCountIs("AWS::EC2::NatGateway", 2);
   });
+
+  test("creates API Gateway", () => {
+    const app = new cdk.App();
+    const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
+    const template = Template.fromStack(stack);
+
+    template.hasResourceProperties("AWS::ApiGateway::RestApi", {
+      Name: "spot-runner-webhook",
+    });
+  });
+
+  test("exports api and webhookUrl properties", () => {
+    const app = new cdk.App();
+    const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
+
+    expect(stack.api).toBeDefined();
+    expect(stack.webhookUrl).toBeDefined();
+    expect(stack.apiRootResourceId).toBeDefined();
+  });
+
+  test("creates webhook secret", () => {
+    const app = new cdk.App();
+    const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
+    const template = Template.fromStack(stack);
+
+    // Should have at least 2 secrets (private key + webhook secret)
+    template.resourceCountIs("AWS::SecretsManager::Secret", 2);
+  });
+
+  test("exports privateKeySecret and webhookSecret properties", () => {
+    const app = new cdk.App();
+    const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
+
+    expect(stack.privateKeySecret).toBeDefined();
+    expect(stack.webhookSecret).toBeDefined();
+    expect(stack.publicKey).toBeDefined();
+  });
+
+  test("creates key generator custom resource", () => {
+    const app = new cdk.App();
+    const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
+    const template = Template.fromStack(stack);
+
+    // Custom resource for key generation
+    template.hasResourceProperties("AWS::CloudFormation::CustomResource", {});
+  });
+
+  test("outputs webhook URL and secret ARNs", () => {
+    const app = new cdk.App();
+    const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
+    const template = Template.fromStack(stack);
+
+    // Should have outputs for new resources
+    const outputs = template.findOutputs("*");
+    const outputKeys = Object.keys(outputs);
+    expect(outputKeys).toContain("WebhookUrl");
+    expect(outputKeys).toContain("WebhookSecretArn");
+    expect(outputKeys).toContain("PrivateKeySecretArn");
+    expect(outputKeys).toContain("PublicKey");
+  });
 });

@@ -2,9 +2,10 @@ import * as cdk from "aws-cdk-lib";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaNodejs from "aws-cdk-lib/aws-lambda-nodejs";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
+import * as iam from "aws-cdk-lib/aws-iam";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import { Construct } from "constructs";
-import * as path from "path";
+import * as path from "node:path";
 
 export interface StatusHandlerProps {
   /**
@@ -16,6 +17,11 @@ export interface StatusHandlerProps {
    * Existing API Gateway to add status route to.
    */
   readonly api: apigateway.RestApi;
+
+  /**
+   * Root resource ID of the API Gateway (for adding routes).
+   */
+  readonly apiRootResourceId: string;
 }
 
 /**
@@ -49,15 +55,30 @@ export class StatusHandler extends Construct {
     // Grant DynamoDB read permissions
     props.stateTable.grantReadData(this.lambda);
 
-    // Add /status route to API Gateway
-    const statusResource = props.api.root.addResource("status");
-    statusResource.addMethod(
-      "GET",
-      new apigateway.LambdaIntegration(this.lambda),
-      {
-        // No authorization required for status endpoint
-        authorizationType: apigateway.AuthorizationType.NONE,
-      }
-    );
+    // Add /status route to API Gateway using Cfn-level constructs
+    // to avoid circular dependency when API is from another stack
+    const statusResource = new apigateway.CfnResource(this, "StatusResource", {
+      restApiId: props.api.restApiId,
+      parentId: props.apiRootResourceId,
+      pathPart: "status",
+    });
+
+    // Grant API Gateway permission to invoke the Lambda
+    this.lambda.addPermission("ApiGatewayInvoke", {
+      principal: new iam.ServicePrincipal("apigateway.amazonaws.com"),
+      sourceArn: `arn:aws:execute-api:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:${props.api.restApiId}/*/*/*`,
+    });
+
+    new apigateway.CfnMethod(this, "StatusMethod", {
+      restApiId: props.api.restApiId,
+      resourceId: statusResource.ref,
+      httpMethod: "GET",
+      authorizationType: "NONE",
+      integration: {
+        type: "AWS_PROXY",
+        integrationHttpMethod: "POST",
+        uri: `arn:aws:apigateway:${cdk.Stack.of(this).region}:lambda:path/2015-03-31/functions/${this.lambda.functionArn}/invocations`,
+      },
+    });
   }
 }

@@ -1,6 +1,9 @@
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as apigateway from "aws-cdk-lib/aws-apigateway";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
+import { KeyGenerator } from "./constructs";
 
 export interface SpotRunnerFoundationStackProps extends cdk.StackProps {
   /**
@@ -37,6 +40,36 @@ export class SpotRunnerFoundationStack extends cdk.Stack {
    */
   public readonly runnerSecurityGroup: ec2.ISecurityGroup;
 
+  /**
+   * API Gateway REST API for webhooks.
+   */
+  public readonly api: apigateway.RestApi;
+
+  /**
+   * Webhook URL (base URL with /webhook path).
+   */
+  public readonly webhookUrl: string;
+
+  /**
+   * Secret containing the GitHub App private key.
+   */
+  public readonly privateKeySecret: secretsmanager.ISecret;
+
+  /**
+   * Public key in PEM format for GitHub App registration.
+   */
+  public readonly publicKey: string;
+
+  /**
+   * Secret containing the webhook secret.
+   */
+  public readonly webhookSecret: secretsmanager.ISecret;
+
+  /**
+   * Root resource ID of the API Gateway (for adding routes in app stack).
+   */
+  public readonly apiRootResourceId: string;
+
   constructor(scope: Construct, id: string, props?: SpotRunnerFoundationStackProps) {
     super(scope, id, props);
 
@@ -68,6 +101,54 @@ export class SpotRunnerFoundationStack extends cdk.Stack {
       allowAllOutbound: true,
     });
 
+    // API Gateway for webhook endpoint
+    this.api = new apigateway.RestApi(this, "Api", {
+      restApiName: "spot-runner-webhook",
+      description: "GitHub webhook endpoint for spot runners",
+      deployOptions: {
+        stageName: "prod",
+        throttlingRateLimit: 100,
+        throttlingBurstLimit: 200,
+      },
+    });
+
+    // Store root resource ID for app stack to add routes
+    this.apiRootResourceId = this.api.root.resourceId;
+
+    // Add a health check endpoint (required for API Gateway validation)
+    // The app stack will add the /webhook route with Lambda integration
+    this.api.root.addResource("health").addMethod("GET", new apigateway.MockIntegration({
+      integrationResponses: [{
+        statusCode: "200",
+        responseTemplates: {
+          "application/json": JSON.stringify({ status: "ok" }),
+        },
+      }],
+      requestTemplates: {
+        "application/json": '{"statusCode": 200}',
+      },
+    }), {
+      methodResponses: [{ statusCode: "200" }],
+    });
+    this.webhookUrl = `${this.api.url}webhook`;
+
+    // Generate RSA key pair for GitHub App authentication
+    const keyGenerator = new KeyGenerator(this, "KeyGenerator", {
+      description: "GitHub App private key for spot-runner",
+    });
+    this.privateKeySecret = keyGenerator.privateKeySecret;
+    this.publicKey = keyGenerator.publicKey;
+
+    // Generate webhook secret
+    this.webhookSecret = new secretsmanager.Secret(this, "WebhookSecret", {
+      description: "GitHub webhook secret for spot-runner",
+      generateSecretString: {
+        excludePunctuation: true,
+        passwordLength: 32,
+      },
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
     // Stack outputs
     new cdk.CfnOutput(this, "VpcId", {
       value: this.vpc.vpcId,
@@ -77,6 +158,31 @@ export class SpotRunnerFoundationStack extends cdk.Stack {
     new cdk.CfnOutput(this, "RunnerSecurityGroupId", {
       value: this.runnerSecurityGroup.securityGroupId,
       description: "Security group ID for runners",
+    });
+
+    new cdk.CfnOutput(this, "WebhookUrl", {
+      value: this.webhookUrl,
+      description: "Webhook URL for GitHub App configuration",
+    });
+
+    new cdk.CfnOutput(this, "PublicKey", {
+      value: this.publicKey,
+      description: "Public key (PEM) for GitHub App registration",
+    });
+
+    new cdk.CfnOutput(this, "WebhookSecretArn", {
+      value: this.webhookSecret.secretArn,
+      description: "ARN of the webhook secret",
+    });
+
+    new cdk.CfnOutput(this, "PrivateKeySecretArn", {
+      value: this.privateKeySecret.secretArn,
+      description: "ARN of the private key secret",
+    });
+
+    new cdk.CfnOutput(this, "ApiRootResourceId", {
+      value: this.apiRootResourceId,
+      description: "Root resource ID for adding routes in app stack",
     });
   }
 }

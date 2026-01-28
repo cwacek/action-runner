@@ -2,6 +2,7 @@ import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import { Template } from "aws-cdk-lib/assertions";
 import { StateTable, RunnerLaunchTemplate, WebhookHandler, CleanupHandler } from "../lib/constructs";
 
@@ -47,6 +48,13 @@ describe("Isolate hang", () => {
     const profile = new iam.InstanceProfile(stack, "Profile", { role });
     const lt = new RunnerLaunchTemplate(stack, "LT", { vpc, securityGroups: [sg], instanceProfile: profile });
 
+    // Create API Gateway for webhook
+    const api = new apigateway.RestApi(stack, "Api", {
+      restApiName: "test-api",
+    });
+    // Add a placeholder method to make the API valid
+    api.root.addResource("health").addMethod("GET");
+
     new WebhookHandler(stack, "WH", {
       stateTable: table.table,
       privateKeySecret: secret1,
@@ -58,6 +66,8 @@ describe("Isolate hang", () => {
       securityGroups: [sg],
       ttlDays: 7,
       configPrefix: "/test",
+      api,
+      apiRootResourceId: api.root.resourceId,
     });
     Template.fromStack(stack);
     console.log("WebhookHandler: OK");

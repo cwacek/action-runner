@@ -1,46 +1,42 @@
 import * as cdk from "aws-cdk-lib";
-import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { Template } from "aws-cdk-lib/assertions";
 import { SpotRunnerStack } from "../lib/spot-runner-stack";
+import { SpotRunnerFoundationStack } from "../lib/foundation-stack";
 
 /**
- * Creates test props with a mock VPC and security group.
- * Each test gets its own VPC to avoid cross-test interference.
+ * Creates test props using a real foundation stack.
  */
-function createTestProps(stack: cdk.Stack) {
-  const vpc = new ec2.Vpc(stack, "TestVpc", {
-    maxAzs: 2,
-    natGateways: 1,
-  });
-  const runnerSecurityGroup = new ec2.SecurityGroup(stack, "TestRunnerSG", {
-    vpc,
-    description: "Test security group",
-  });
+function createTestStacks(app: cdk.App) {
+  const foundation = new SpotRunnerFoundationStack(app, "FoundationStack");
 
   return {
-    vpc,
-    runnerSecurityGroup,
-    githubServerUrl: "https://github.example.com",
-    githubAppId: "123456",
-    githubAppPrivateKey: "-----BEGIN RSA PRIVATE KEY-----\nTEST\n-----END RSA PRIVATE KEY-----",
-    webhookSecret: "test-secret",
-    presets: [
-      {
-        name: "linux-x64",
-        architecture: "x86_64" as const,
-        instanceTypes: ["m5.large", "m5.xlarge"],
-        labels: ["linux"],
-      },
-    ],
+    foundation,
+    appProps: {
+      vpc: foundation.vpc,
+      runnerSecurityGroup: foundation.runnerSecurityGroup,
+      api: foundation.api,
+      apiRootResourceId: foundation.apiRootResourceId,
+      privateKeySecret: foundation.privateKeySecret,
+      webhookSecret: foundation.webhookSecret,
+      githubServerUrl: "https://github.example.com",
+      githubAppId: "123456",
+      presets: [
+        {
+          name: "linux-x64",
+          architecture: "x86_64" as const,
+          instanceTypes: ["m5.large", "m5.xlarge"],
+          labels: ["linux"],
+        },
+      ],
+    },
   };
 }
 
 describe("SpotRunnerStack", () => {
   test("creates DynamoDB table with correct schema", () => {
     const app = new cdk.App();
-    const foundationStack = new cdk.Stack(app, "FoundationStack");
-    const props = createTestProps(foundationStack);
-    const stack = new SpotRunnerStack(app, "TestStack", props);
+    const { appProps } = createTestStacks(app);
+    const stack = new SpotRunnerStack(app, "TestStack", appProps);
     const template = Template.fromStack(stack);
 
     // Verify DynamoDB table exists with correct key schema
@@ -59,34 +55,30 @@ describe("SpotRunnerStack", () => {
     });
   });
 
-  test("creates Secrets Manager secrets", () => {
+  test("does not create its own secrets (uses foundation)", () => {
     const app = new cdk.App();
-    const foundationStack = new cdk.Stack(app, "FoundationStack");
-    const props = createTestProps(foundationStack);
-    const stack = new SpotRunnerStack(app, "TestStack", props);
+    const { appProps } = createTestStacks(app);
+    const stack = new SpotRunnerStack(app, "TestStack", appProps);
     const template = Template.fromStack(stack);
 
-    // Should have two secrets (private key and webhook secret)
-    template.resourceCountIs("AWS::SecretsManager::Secret", 2);
+    // App stack should NOT create any secrets (they come from foundation)
+    template.resourceCountIs("AWS::SecretsManager::Secret", 0);
   });
 
-  test("creates API Gateway", () => {
+  test("does not create API Gateway (uses foundation)", () => {
     const app = new cdk.App();
-    const foundationStack = new cdk.Stack(app, "FoundationStack");
-    const props = createTestProps(foundationStack);
-    const stack = new SpotRunnerStack(app, "TestStack", props);
+    const { appProps } = createTestStacks(app);
+    const stack = new SpotRunnerStack(app, "TestStack", appProps);
     const template = Template.fromStack(stack);
 
-    template.hasResourceProperties("AWS::ApiGateway::RestApi", {
-      Name: "spot-runner-webhook",
-    });
+    // App stack should NOT create RestApi (it uses foundation's API)
+    template.resourceCountIs("AWS::ApiGateway::RestApi", 0);
   });
 
   test("creates Lambda functions", () => {
     const app = new cdk.App();
-    const foundationStack = new cdk.Stack(app, "FoundationStack");
-    const props = createTestProps(foundationStack);
-    const stack = new SpotRunnerStack(app, "TestStack", props);
+    const { appProps } = createTestStacks(app);
+    const stack = new SpotRunnerStack(app, "TestStack", appProps);
     const template = Template.fromStack(stack);
 
     // Should have at least 2 Lambda functions (webhook and cleanup)
@@ -96,9 +88,8 @@ describe("SpotRunnerStack", () => {
 
   test("creates SSM parameter for each preset", () => {
     const app = new cdk.App();
-    const foundationStack = new cdk.Stack(app, "FoundationStack");
-    const props = createTestProps(foundationStack);
-    const stack = new SpotRunnerStack(app, "TestStack", props);
+    const { appProps } = createTestStacks(app);
+    const stack = new SpotRunnerStack(app, "TestStack", appProps);
     const template = Template.fromStack(stack);
 
     template.hasResourceProperties("AWS::SSM::Parameter", {
@@ -106,11 +97,10 @@ describe("SpotRunnerStack", () => {
     });
   });
 
-  test("uses VPC from props (does not create its own)", () => {
+  test("uses VPC from foundation (does not create its own)", () => {
     const app = new cdk.App();
-    const foundationStack = new cdk.Stack(app, "FoundationStack");
-    const props = createTestProps(foundationStack);
-    const stack = new SpotRunnerStack(app, "TestStack", props);
+    const { appProps } = createTestStacks(app);
+    const stack = new SpotRunnerStack(app, "TestStack", appProps);
     const template = Template.fromStack(stack);
 
     // App stack should NOT create any VPC resources
@@ -119,9 +109,8 @@ describe("SpotRunnerStack", () => {
 
   test("creates launch template", () => {
     const app = new cdk.App();
-    const foundationStack = new cdk.Stack(app, "FoundationStack");
-    const props = createTestProps(foundationStack);
-    const stack = new SpotRunnerStack(app, "TestStack", props);
+    const { appProps } = createTestStacks(app);
+    const stack = new SpotRunnerStack(app, "TestStack", appProps);
     const template = Template.fromStack(stack);
 
     template.hasResourceProperties("AWS::EC2::LaunchTemplate", {

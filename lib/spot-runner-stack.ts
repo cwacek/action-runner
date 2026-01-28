@@ -4,6 +4,7 @@ import * as events from "aws-cdk-lib/aws-events";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as ssm from "aws-cdk-lib/aws-ssm";
+import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import { Construct } from "constructs";
 import {
   StateTable,
@@ -79,20 +80,6 @@ export interface SpotRunnerStackProps extends cdk.StackProps {
   readonly githubAppId: string;
 
   /**
-   * GitHub App private key (PEM format).
-   * Will be stored in Secrets Manager.
-   * Required.
-   */
-  readonly githubAppPrivateKey: string;
-
-  /**
-   * GitHub webhook secret.
-   * Will be stored in Secrets Manager.
-   * Required.
-   */
-  readonly webhookSecret: string;
-
-  /**
    * VPC for runners. Must be provided from the foundation stack.
    */
   readonly vpc: ec2.IVpc;
@@ -101,6 +88,26 @@ export interface SpotRunnerStackProps extends cdk.StackProps {
    * Security group for runner instances. Must be provided from the foundation stack.
    */
   readonly runnerSecurityGroup: ec2.ISecurityGroup;
+
+  /**
+   * API Gateway REST API from the foundation stack.
+   */
+  readonly api: apigateway.RestApi;
+
+  /**
+   * Root resource ID of the API Gateway (for adding routes).
+   */
+  readonly apiRootResourceId: string;
+
+  /**
+   * Secret containing the GitHub App private key. From foundation stack.
+   */
+  readonly privateKeySecret: secretsmanager.ISecret;
+
+  /**
+   * Secret containing the webhook secret. From foundation stack.
+   */
+  readonly webhookSecret: secretsmanager.ISecret;
 
   /**
    * TTL for state records in days.
@@ -162,8 +169,6 @@ export class SpotRunnerStack extends cdk.Stack {
   public readonly stateTable: StateTable;
   public readonly vpc: ec2.IVpc;
   public readonly webhookUrl: string;
-  public readonly privateKeySecret: secretsmanager.ISecret;
-  public readonly webhookSecretResource: secretsmanager.ISecret;
   public readonly imageBuilderEventRule: events.Rule;
 
   constructor(scope: Construct, id: string, props: SpotRunnerStackProps) {
@@ -186,16 +191,9 @@ export class SpotRunnerStack extends cdk.Stack {
       ttlDays,
     });
 
-    // Secrets Manager for GitHub App credentials
-    this.privateKeySecret = new secretsmanager.Secret(this, "PrivateKey", {
-      description: "GitHub App private key for spot-runner",
-      secretStringValue: cdk.SecretValue.unsafePlainText(props.githubAppPrivateKey),
-    });
-
-    this.webhookSecretResource = new secretsmanager.Secret(this, "WebhookSecret", {
-      description: "GitHub webhook secret for spot-runner",
-      secretStringValue: cdk.SecretValue.unsafePlainText(props.webhookSecret),
-    });
+    // Secrets from foundation stack
+    const privateKeySecret = props.privateKeySecret;
+    const webhookSecret = props.webhookSecret;
 
     // IAM role for runner instances
     const runnerRole = new iam.Role(this, "RunnerRole", {
@@ -239,11 +237,11 @@ export class SpotRunnerStack extends cdk.Stack {
       ? this.vpc.privateSubnets
       : this.vpc.publicSubnets;
 
-    // Webhook handler Lambda
-    const webhookHandler = new WebhookHandler(this, "WebhookHandler", {
+    // Webhook handler Lambda - uses API from foundation stack
+    new WebhookHandler(this, "WebhookHandler", {
       stateTable: this.stateTable.table,
-      privateKeySecret: this.privateKeySecret,
-      webhookSecret: this.webhookSecretResource,
+      privateKeySecret,
+      webhookSecret,
       githubAppId: props.githubAppId,
       githubServerUrl: props.githubServerUrl,
       launchTemplateId: launchTemplate.launchTemplate.launchTemplateId ?? "",
@@ -251,9 +249,11 @@ export class SpotRunnerStack extends cdk.Stack {
       securityGroups: [runnerSecurityGroup],
       ttlDays,
       configPrefix,
+      api: props.api,
+      apiRootResourceId: props.apiRootResourceId,
     });
 
-    this.webhookUrl = webhookHandler.webhookUrl;
+    this.webhookUrl = `${props.api.url}webhook`;
 
     // Cleanup handler Lambda
     new CleanupHandler(this, "CleanupHandler", {
@@ -334,33 +334,14 @@ export class SpotRunnerStack extends cdk.Stack {
     // Status Handler - provides /status API endpoint
     new StatusHandler(this, "StatusHandler", {
       stateTable: this.stateTable.table,
-      api: webhookHandler.api,
+      api: props.api,
+      apiRootResourceId: props.apiRootResourceId,
     });
 
     // Stack outputs
-    new cdk.CfnOutput(this, "WebhookUrl", {
-      value: this.webhookUrl,
-      description: "Webhook URL for GitHub App configuration",
-    });
-
-    new cdk.CfnOutput(this, "PrivateKeySecretArn", {
-      value: this.privateKeySecret.secretArn,
-      description: "ARN of the private key secret",
-    });
-
-    new cdk.CfnOutput(this, "WebhookSecretArn", {
-      value: this.webhookSecretResource.secretArn,
-      description: "ARN of the webhook secret",
-    });
-
     new cdk.CfnOutput(this, "StateTableName", {
       value: this.stateTable.table.tableName,
       description: "DynamoDB table for runner state",
-    });
-
-    new cdk.CfnOutput(this, "VpcId", {
-      value: this.vpc.vpcId,
-      description: "VPC ID for runners",
     });
   }
 }
