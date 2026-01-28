@@ -1,26 +1,46 @@
 import * as cdk from "aws-cdk-lib";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { Template } from "aws-cdk-lib/assertions";
 import { SpotRunnerStack } from "../lib/spot-runner-stack";
 
-const TEST_PROPS = {
-  githubServerUrl: "https://github.example.com",
-  githubAppId: "123456",
-  githubAppPrivateKey: "-----BEGIN RSA PRIVATE KEY-----\nTEST\n-----END RSA PRIVATE KEY-----",
-  webhookSecret: "test-secret",
-  presets: [
-    {
-      name: "linux-x64",
-      architecture: "x86_64" as const,
-      instanceTypes: ["m5.large", "m5.xlarge"],
-      labels: ["linux"],
-    },
-  ],
-};
+/**
+ * Creates test props with a mock VPC and security group.
+ * Each test gets its own VPC to avoid cross-test interference.
+ */
+function createTestProps(stack: cdk.Stack) {
+  const vpc = new ec2.Vpc(stack, "TestVpc", {
+    maxAzs: 2,
+    natGateways: 1,
+  });
+  const runnerSecurityGroup = new ec2.SecurityGroup(stack, "TestRunnerSG", {
+    vpc,
+    description: "Test security group",
+  });
+
+  return {
+    vpc,
+    runnerSecurityGroup,
+    githubServerUrl: "https://github.example.com",
+    githubAppId: "123456",
+    githubAppPrivateKey: "-----BEGIN RSA PRIVATE KEY-----\nTEST\n-----END RSA PRIVATE KEY-----",
+    webhookSecret: "test-secret",
+    presets: [
+      {
+        name: "linux-x64",
+        architecture: "x86_64" as const,
+        instanceTypes: ["m5.large", "m5.xlarge"],
+        labels: ["linux"],
+      },
+    ],
+  };
+}
 
 describe("SpotRunnerStack", () => {
   test("creates DynamoDB table with correct schema", () => {
     const app = new cdk.App();
-    const stack = new SpotRunnerStack(app, "TestStack", TEST_PROPS);
+    const foundationStack = new cdk.Stack(app, "FoundationStack");
+    const props = createTestProps(foundationStack);
+    const stack = new SpotRunnerStack(app, "TestStack", props);
     const template = Template.fromStack(stack);
 
     // Verify DynamoDB table exists with correct key schema
@@ -41,7 +61,9 @@ describe("SpotRunnerStack", () => {
 
   test("creates Secrets Manager secrets", () => {
     const app = new cdk.App();
-    const stack = new SpotRunnerStack(app, "TestStack", TEST_PROPS);
+    const foundationStack = new cdk.Stack(app, "FoundationStack");
+    const props = createTestProps(foundationStack);
+    const stack = new SpotRunnerStack(app, "TestStack", props);
     const template = Template.fromStack(stack);
 
     // Should have two secrets (private key and webhook secret)
@@ -50,7 +72,9 @@ describe("SpotRunnerStack", () => {
 
   test("creates API Gateway", () => {
     const app = new cdk.App();
-    const stack = new SpotRunnerStack(app, "TestStack", TEST_PROPS);
+    const foundationStack = new cdk.Stack(app, "FoundationStack");
+    const props = createTestProps(foundationStack);
+    const stack = new SpotRunnerStack(app, "TestStack", props);
     const template = Template.fromStack(stack);
 
     template.hasResourceProperties("AWS::ApiGateway::RestApi", {
@@ -60,7 +84,9 @@ describe("SpotRunnerStack", () => {
 
   test("creates Lambda functions", () => {
     const app = new cdk.App();
-    const stack = new SpotRunnerStack(app, "TestStack", TEST_PROPS);
+    const foundationStack = new cdk.Stack(app, "FoundationStack");
+    const props = createTestProps(foundationStack);
+    const stack = new SpotRunnerStack(app, "TestStack", props);
     const template = Template.fromStack(stack);
 
     // Should have at least 2 Lambda functions (webhook and cleanup)
@@ -70,7 +96,9 @@ describe("SpotRunnerStack", () => {
 
   test("creates SSM parameter for each preset", () => {
     const app = new cdk.App();
-    const stack = new SpotRunnerStack(app, "TestStack", TEST_PROPS);
+    const foundationStack = new cdk.Stack(app, "FoundationStack");
+    const props = createTestProps(foundationStack);
+    const stack = new SpotRunnerStack(app, "TestStack", props);
     const template = Template.fromStack(stack);
 
     template.hasResourceProperties("AWS::SSM::Parameter", {
@@ -78,17 +106,22 @@ describe("SpotRunnerStack", () => {
     });
   });
 
-  test("creates VPC when not provided", () => {
+  test("uses VPC from props (does not create its own)", () => {
     const app = new cdk.App();
-    const stack = new SpotRunnerStack(app, "TestStack", TEST_PROPS);
+    const foundationStack = new cdk.Stack(app, "FoundationStack");
+    const props = createTestProps(foundationStack);
+    const stack = new SpotRunnerStack(app, "TestStack", props);
     const template = Template.fromStack(stack);
 
-    template.resourceCountIs("AWS::EC2::VPC", 1);
+    // App stack should NOT create any VPC resources
+    template.resourceCountIs("AWS::EC2::VPC", 0);
   });
 
   test("creates launch template", () => {
     const app = new cdk.App();
-    const stack = new SpotRunnerStack(app, "TestStack", TEST_PROPS);
+    const foundationStack = new cdk.Stack(app, "FoundationStack");
+    const props = createTestProps(foundationStack);
+    const stack = new SpotRunnerStack(app, "TestStack", props);
     const template = Template.fromStack(stack);
 
     template.hasResourceProperties("AWS::EC2::LaunchTemplate", {

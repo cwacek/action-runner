@@ -93,9 +93,14 @@ export interface SpotRunnerStackProps extends cdk.StackProps {
   readonly webhookSecret: string;
 
   /**
-   * Existing VPC to use. If not provided, a new VPC is created.
+   * VPC for runners. Must be provided from the foundation stack.
    */
-  readonly vpc?: ec2.IVpc;
+  readonly vpc: ec2.IVpc;
+
+  /**
+   * Security group for runner instances. Must be provided from the foundation stack.
+   */
+  readonly runnerSecurityGroup: ec2.ISecurityGroup;
 
   /**
    * TTL for state records in days.
@@ -172,30 +177,9 @@ export class SpotRunnerStack extends cdk.Stack {
     const jobTimeout = props.jobTimeoutMinutes ?? 60;
     const configPrefix = "/spot-runner/configs";
 
-    // VPC - use provided or create new
-    this.vpc = props.vpc ?? new ec2.Vpc(this, "Vpc", {
-      maxAzs: 2,
-      natGateways: 1,
-      subnetConfiguration: [
-        {
-          name: "Public",
-          subnetType: ec2.SubnetType.PUBLIC,
-          cidrMask: 24,
-        },
-        {
-          name: "Private",
-          subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
-          cidrMask: 24,
-        },
-      ],
-    });
-
-    // Security group for runners
-    const runnerSecurityGroup = new ec2.SecurityGroup(this, "RunnerSG", {
-      vpc: this.vpc,
-      description: "Security group for spot runners",
-      allowAllOutbound: true,
-    });
+    // VPC and security group from foundation stack
+    this.vpc = props.vpc;
+    const runnerSecurityGroup = props.runnerSecurityGroup;
 
     // DynamoDB table for runner state
     this.stateTable = new StateTable(this, "StateTable", {

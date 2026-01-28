@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import "source-map-support/register";
 import * as cdk from "aws-cdk-lib";
+import { SpotRunnerFoundationStack } from "../lib/foundation-stack";
 import { SpotRunnerStack } from "../lib/spot-runner-stack";
 
 const app = new cdk.App();
@@ -33,11 +34,21 @@ if (missing.length > 0) {
   );
 }
 
+const env = {
+  account: process.env.CDK_DEFAULT_ACCOUNT,
+  region: process.env.CDK_DEFAULT_REGION,
+};
+
+// Foundation stack - VPC and security groups (long-lived, rarely destroyed)
+const foundation = new SpotRunnerFoundationStack(app, "SpotRunnerFoundationStack", {
+  env,
+});
+
+// Application stack - all other resources (frequently iterated)
 new SpotRunnerStack(app, "SpotRunnerStack", {
-  env: {
-    account: process.env.CDK_DEFAULT_ACCOUNT,
-    region: process.env.CDK_DEFAULT_REGION,
-  },
+  env,
+  vpc: foundation.vpc,
+  runnerSecurityGroup: foundation.runnerSecurityGroup,
   githubServerUrl,
   githubAppId,
   githubAppPrivateKey,
