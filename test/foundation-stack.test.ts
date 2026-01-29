@@ -52,9 +52,9 @@ describe("SpotRunnerFoundationStack", () => {
     const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
     const template = Template.fromStack(stack);
 
-    // Should have outputs for VPC ID and security group ID
+    // Should have outputs for VPC ID, security group ID, and private key secret ARN
     const outputs = template.findOutputs("*");
-    expect(Object.keys(outputs).length).toBeGreaterThanOrEqual(2);
+    expect(Object.keys(outputs).length).toBeGreaterThanOrEqual(3);
   });
 
   test("respects custom maxAzs", () => {
@@ -77,63 +77,49 @@ describe("SpotRunnerFoundationStack", () => {
     template.resourceCountIs("AWS::EC2::NatGateway", 2);
   });
 
-  test("creates API Gateway", () => {
+  test("creates placeholder private key secret", () => {
     const app = new cdk.App();
     const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
     const template = Template.fromStack(stack);
 
-    template.hasResourceProperties("AWS::ApiGateway::RestApi", {
-      Name: "spot-runner-webhook",
+    // Should have exactly 1 secret (private key placeholder)
+    template.resourceCountIs("AWS::SecretsManager::Secret", 1);
+
+    template.hasResourceProperties("AWS::SecretsManager::Secret", {
+      Description: "GitHub App private key - upload after creating the app on GitHub",
     });
   });
 
-  test("exports api and webhookUrl properties", () => {
-    const app = new cdk.App();
-    const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
-
-    expect(stack.api).toBeDefined();
-    expect(stack.webhookUrl).toBeDefined();
-    expect(stack.apiRootResourceId).toBeDefined();
-  });
-
-  test("creates webhook secret", () => {
-    const app = new cdk.App();
-    const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
-    const template = Template.fromStack(stack);
-
-    // Should have at least 2 secrets (private key + webhook secret)
-    template.resourceCountIs("AWS::SecretsManager::Secret", 2);
-  });
-
-  test("exports privateKeySecret and webhookSecret properties", () => {
+  test("exports privateKeySecret property", () => {
     const app = new cdk.App();
     const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
 
     expect(stack.privateKeySecret).toBeDefined();
-    expect(stack.webhookSecret).toBeDefined();
-    expect(stack.publicKey).toBeDefined();
   });
 
-  test("creates key generator custom resource", () => {
+  test("does not create API Gateway (moved to app stack)", () => {
     const app = new cdk.App();
     const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
     const template = Template.fromStack(stack);
 
-    // Custom resource for key generation
-    template.hasResourceProperties("AWS::CloudFormation::CustomResource", {});
+    template.resourceCountIs("AWS::ApiGateway::RestApi", 0);
   });
 
-  test("outputs webhook URL and secret ARNs", () => {
+  test("does not create key generator custom resource", () => {
     const app = new cdk.App();
     const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
     const template = Template.fromStack(stack);
 
-    // Should have outputs for new resources
+    template.resourceCountIs("AWS::CloudFormation::CustomResource", 0);
+  });
+
+  test("outputs private key secret ARN", () => {
+    const app = new cdk.App();
+    const stack = new SpotRunnerFoundationStack(app, "TestFoundationStack");
+    const template = Template.fromStack(stack);
+
     const outputs = template.findOutputs("*");
     const outputKeys = Object.keys(outputs);
-    expect(outputKeys).toContain("WebhookUrl");
-    expect(outputKeys).toContain("WebhookSecretArn");
     expect(outputKeys).toContain("PrivateKeySecretArn");
-    expect(outputKeys).toContain("PublicKey");
   });
 });

@@ -7,10 +7,7 @@ function createBaseProps(app: cdk.App) {
   return {
     vpc: foundation.vpc,
     runnerSecurityGroup: foundation.runnerSecurityGroup,
-    api: foundation.api,
-    apiRootResourceId: foundation.apiRootResourceId,
     privateKeySecret: foundation.privateKeySecret,
-    webhookSecret: foundation.webhookSecret,
     githubServerUrl: "https://github.example.com",
     githubAppId: "123456",
   };

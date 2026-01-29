@@ -90,24 +90,9 @@ export interface SpotRunnerStackProps extends cdk.StackProps {
   readonly runnerSecurityGroup: ec2.ISecurityGroup;
 
   /**
-   * API Gateway REST API from the foundation stack.
-   */
-  readonly api: apigateway.RestApi;
-
-  /**
-   * Root resource ID of the API Gateway (for adding routes).
-   */
-  readonly apiRootResourceId: string;
-
-  /**
    * Secret containing the GitHub App private key. From foundation stack.
    */
   readonly privateKeySecret: secretsmanager.ISecret;
-
-  /**
-   * Secret containing the webhook secret. From foundation stack.
-   */
-  readonly webhookSecret: secretsmanager.ISecret;
 
   /**
    * TTL for state records in days.
@@ -191,9 +176,44 @@ export class SpotRunnerStack extends cdk.Stack {
       ttlDays,
     });
 
-    // Secrets from foundation stack
+    // Private key secret from foundation stack
     const privateKeySecret = props.privateKeySecret;
-    const webhookSecret = props.webhookSecret;
+
+    // API Gateway for webhook and status endpoints (created in app stack)
+    const api = new apigateway.RestApi(this, "Api", {
+      restApiName: "spot-runner-webhook",
+      description: "GitHub webhook endpoint for spot runners",
+      deployOptions: {
+        stageName: "prod",
+        throttlingRateLimit: 100,
+        throttlingBurstLimit: 200,
+      },
+    });
+
+    // Health check endpoint
+    api.root.addResource("health").addMethod("GET", new apigateway.MockIntegration({
+      integrationResponses: [{
+        statusCode: "200",
+        responseTemplates: {
+          "application/json": JSON.stringify({ status: "ok" }),
+        },
+      }],
+      requestTemplates: {
+        "application/json": '{"statusCode": 200}',
+      },
+    }), {
+      methodResponses: [{ statusCode: "200" }],
+    });
+
+    // Webhook secret (generated in app stack, output for GitHub App configuration)
+    const webhookSecret = new secretsmanager.Secret(this, "WebhookSecret", {
+      description: "GitHub webhook secret for spot-runner",
+      generateSecretString: {
+        excludePunctuation: true,
+        passwordLength: 32,
+      },
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
 
     // IAM role for runner instances
     const runnerRole = new iam.Role(this, "RunnerRole", {
@@ -237,7 +257,7 @@ export class SpotRunnerStack extends cdk.Stack {
       ? this.vpc.privateSubnets
       : this.vpc.publicSubnets;
 
-    // Webhook handler Lambda - uses API from foundation stack
+    // Webhook handler Lambda
     new WebhookHandler(this, "WebhookHandler", {
       stateTable: this.stateTable.table,
       privateKeySecret,
@@ -249,11 +269,10 @@ export class SpotRunnerStack extends cdk.Stack {
       securityGroups: [runnerSecurityGroup],
       ttlDays,
       configPrefix,
-      api: props.api,
-      apiRootResourceId: props.apiRootResourceId,
+      api,
     });
 
-    this.webhookUrl = `${props.api.url}webhook`;
+    this.webhookUrl = `${api.url}webhook`;
 
     // Cleanup handler Lambda
     new CleanupHandler(this, "CleanupHandler", {
@@ -334,14 +353,24 @@ export class SpotRunnerStack extends cdk.Stack {
     // Status Handler - provides /status API endpoint
     new StatusHandler(this, "StatusHandler", {
       stateTable: this.stateTable.table,
-      api: props.api,
-      apiRootResourceId: props.apiRootResourceId,
+      api,
+      privateKeySecret,
     });
 
     // Stack outputs
     new cdk.CfnOutput(this, "StateTableName", {
       value: this.stateTable.table.tableName,
       description: "DynamoDB table for runner state",
+    });
+
+    new cdk.CfnOutput(this, "WebhookUrl", {
+      value: this.webhookUrl,
+      description: "Webhook URL - configure in your GitHub App settings",
+    });
+
+    new cdk.CfnOutput(this, "WebhookSecretValue", {
+      value: webhookSecret.secretValue.unsafeUnwrap(),
+      description: "Webhook secret - configure in your GitHub App settings",
     });
   }
 }

@@ -61,14 +61,9 @@ export interface WebhookHandlerProps {
   readonly configPrefix: string;
 
   /**
-   * API Gateway REST API from foundation stack.
+   * API Gateway REST API (same stack).
    */
   readonly api: apigateway.RestApi;
-
-  /**
-   * Root resource ID of the API Gateway (for adding routes).
-   */
-  readonly apiRootResourceId: string;
 }
 
 /**
@@ -149,43 +144,8 @@ export class WebhookHandler extends Construct {
       })
     );
 
-    // Add webhook endpoint to the imported API Gateway
-    // Use Cfn-level constructs to avoid circular dependency when API is from another stack
-    const webhookResource = new apigateway.CfnResource(this, "WebhookResource", {
-      restApiId: props.api.restApiId,
-      parentId: props.apiRootResourceId,
-      pathPart: "webhook",
-    });
-
-    // Grant API Gateway permission to invoke the Lambda
-    this.lambda.addPermission("ApiGatewayInvoke", {
-      principal: new iam.ServicePrincipal("apigateway.amazonaws.com"),
-      sourceArn: `arn:aws:execute-api:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:${props.api.restApiId}/*/*/*`,
-    });
-
-    new apigateway.CfnMethod(this, "WebhookMethod", {
-      restApiId: props.api.restApiId,
-      resourceId: webhookResource.ref,
-      httpMethod: "POST",
-      authorizationType: "NONE",
-      integration: {
-        type: "AWS_PROXY",
-        integrationHttpMethod: "POST",
-        uri: `arn:aws:apigateway:${cdk.Stack.of(this).region}:lambda:path/2015-03-31/functions/${this.lambda.functionArn}/invocations`,
-      },
-    });
-
-    // Force a new deployment when the method changes
-    const deployment = new apigateway.CfnDeployment(this, "WebhookDeployment", {
-      restApiId: props.api.restApiId,
-    });
-    deployment.addDependency(webhookResource);
-
-    // Update the stage to use the new deployment
-    new apigateway.CfnStage(this, "WebhookStage", {
-      restApiId: props.api.restApiId,
-      stageName: "prod",
-      deploymentId: deployment.ref,
-    });
+    // Add /webhook POST route to the API Gateway
+    const webhookResource = props.api.root.addResource("webhook");
+    webhookResource.addMethod("POST", new apigateway.LambdaIntegration(this.lambda));
   }
 }

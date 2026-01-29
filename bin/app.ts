@@ -19,11 +19,12 @@ const env = {
   region: process.env.CDK_DEFAULT_REGION,
 };
 
-// Foundation stack - VPC, API Gateway, and secrets (long-lived, deploy first)
-// After deploying this stack, use the outputs to register your GitHub App:
-// - WebhookUrl: Configure as the webhook URL in GitHub App settings
-// - PublicKey: Upload to GitHub App as the public key
-// - WebhookSecretArn: Retrieve the secret value for GitHub App configuration
+// Foundation stack - VPC, security group, and private key secret (long-lived, deploy first)
+// After deploying this stack:
+// 1. Create a GitHub App on GitHub (without webhook URL)
+// 2. Download the private key and upload to the secret ARN from stack outputs
+// 3. Deploy the app stack below
+// 4. Update your GitHub App with the webhook URL and secret from app stack outputs
 const foundation = new SpotRunnerFoundationStack(app, "SpotRunnerFoundationStack", {
   env,
 });
@@ -43,17 +44,14 @@ if (missing.length > 0) {
   );
 }
 
-// Application stack - Lambda handlers, DynamoDB, etc. (frequently iterated)
+// Application stack - API Gateway, Lambda handlers, DynamoDB, etc. (frequently iterated)
 // Only create if we have the required GitHub App configuration
 if (githubServerUrl && githubAppId) {
   new SpotRunnerStack(app, "SpotRunnerStack", {
     env,
     vpc: foundation.vpc,
     runnerSecurityGroup: foundation.runnerSecurityGroup,
-    api: foundation.api,
-    apiRootResourceId: foundation.apiRootResourceId,
     privateKeySecret: foundation.privateKeySecret,
-    webhookSecret: foundation.webhookSecret,
     githubServerUrl,
     githubAppId,
     presets: [

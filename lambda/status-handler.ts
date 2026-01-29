@@ -1,8 +1,15 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { queryAllAmiStates, AmiState, AmiStatus } from "./lib/ami-state";
+import {
+  SecretsManagerClient,
+  GetSecretValueCommand,
+} from "@aws-sdk/client-secrets-manager";
+
+const secretsClient = new SecretsManagerClient({});
+const PRIVATE_KEY_SECRET_ARN = process.env.PRIVATE_KEY_SECRET_ARN ?? "";
 
 /**
- * Overall system status derived from preset statuses.
+ * Overall system status derived from preset statuses and configuration.
  */
 type SystemStatus = "ready" | "building" | "degraded";
 
@@ -11,6 +18,9 @@ type SystemStatus = "ready" | "building" | "degraded";
  */
 interface StatusResponse {
   status: SystemStatus;
+  configuration: {
+    privateKeyConfigured: boolean;
+  };
   presets: PresetStatus[];
   message: string;
 }
@@ -25,10 +35,42 @@ interface PresetStatus {
   updatedAt: string;
 }
 
+// Cache the private key check for the Lambda invocation lifetime
+let cachedPrivateKeyConfigured: boolean | null = null;
+
+/**
+ * Check if the private key secret has been configured (not a placeholder).
+ */
+async function isPrivateKeyConfigured(): Promise<boolean> {
+  if (cachedPrivateKeyConfigured !== null) return cachedPrivateKeyConfigured;
+
+  if (!PRIVATE_KEY_SECRET_ARN) {
+    cachedPrivateKeyConfigured = false;
+    return false;
+  }
+
+  try {
+    const response = await secretsClient.send(
+      new GetSecretValueCommand({ SecretId: PRIVATE_KEY_SECRET_ARN })
+    );
+    const value = response.SecretString ?? "";
+    cachedPrivateKeyConfigured = value.length > 0 && !value.startsWith("PLACEHOLDER:");
+    return cachedPrivateKeyConfigured;
+  } catch (error) {
+    console.error("Error checking private key secret:", error);
+    cachedPrivateKeyConfigured = false;
+    return false;
+  }
+}
+
 /**
  * Aggregate preset statuses into overall system status.
  */
-function aggregateStatus(presets: AmiState[]): SystemStatus {
+function aggregateStatus(presets: AmiState[], privateKeyConfigured: boolean): SystemStatus {
+  if (!privateKeyConfigured) {
+    return "degraded";
+  }
+
   if (presets.length === 0) {
     return "degraded";
   }
@@ -52,9 +94,16 @@ function aggregateStatus(presets: AmiState[]): SystemStatus {
 /**
  * Generate human-readable status message.
  */
-function generateMessage(presets: AmiState[], status: SystemStatus): string {
+function generateMessage(presets: AmiState[], status: SystemStatus, privateKeyConfigured: boolean): string {
+  const parts: string[] = [];
+
+  if (!privateKeyConfigured) {
+    parts.push("GitHub App private key not configured");
+  }
+
   if (presets.length === 0) {
-    return "No presets configured";
+    parts.push("No presets configured");
+    return parts.join(", ");
   }
 
   const readyCount = presets.filter((p) => p.status === "ready" && p.amiId !== null).length;
@@ -65,11 +114,9 @@ function generateMessage(presets: AmiState[], status: SystemStatus): string {
     (p) => p.amiId === null && p.status !== "building" && p.status !== "failed"
   ).length;
 
-  if (status === "ready") {
+  if (privateKeyConfigured && status === "ready") {
     return presets.length === 1 ? "All presets ready" : `All ${presets.length} presets ready`;
   }
-
-  const parts: string[] = [];
 
   if (buildingCount > 0) {
     parts.push(`${buildingCount} preset${buildingCount > 1 ? "s" : ""} building`);
@@ -99,8 +146,11 @@ export async function handler(
   console.log("Status API request received");
 
   try {
-    // Query all AMI state records
-    const amiStates = await queryAllAmiStates();
+    // Check configuration and AMI states in parallel
+    const [privateKeyConfigured, amiStates] = await Promise.all([
+      isPrivateKeyConfigured(),
+      queryAllAmiStates(),
+    ]);
 
     // Map to response format
     const presets: PresetStatus[] = amiStates.map((state) => ({
@@ -114,11 +164,14 @@ export async function handler(
     presets.sort((a, b) => a.name.localeCompare(b.name));
 
     // Aggregate status
-    const status = aggregateStatus(amiStates);
-    const message = generateMessage(amiStates, status);
+    const status = aggregateStatus(amiStates, privateKeyConfigured);
+    const message = generateMessage(amiStates, status, privateKeyConfigured);
 
     const response: StatusResponse = {
       status,
+      configuration: {
+        privateKeyConfigured,
+      },
       presets,
       message,
     };

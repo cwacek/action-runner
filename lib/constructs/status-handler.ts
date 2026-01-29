@@ -2,8 +2,8 @@ import * as cdk from "aws-cdk-lib";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaNodejs from "aws-cdk-lib/aws-lambda-nodejs";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
-import * as iam from "aws-cdk-lib/aws-iam";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 import * as path from "node:path";
 
@@ -14,19 +14,19 @@ export interface StatusHandlerProps {
   readonly stateTable: dynamodb.ITable;
 
   /**
-   * Existing API Gateway to add status route to.
+   * API Gateway REST API (same stack).
    */
   readonly api: apigateway.RestApi;
 
   /**
-   * Root resource ID of the API Gateway (for adding routes).
+   * Secret containing the GitHub App private key (for configuration status check).
    */
-  readonly apiRootResourceId: string;
+  readonly privateKeySecret: secretsmanager.ISecret;
 }
 
 /**
  * Lambda function for status API endpoint.
- * Adds /status route to existing API Gateway.
+ * Adds /status route to API Gateway.
  */
 export class StatusHandler extends Construct {
   public readonly lambda: lambda.IFunction;
@@ -44,6 +44,7 @@ export class StatusHandler extends Construct {
       memorySize: 256,
       environment: {
         STATE_TABLE_NAME: props.stateTable.tableName,
+        PRIVATE_KEY_SECRET_ARN: props.privateKeySecret.secretArn,
       },
       bundling: {
         minify: true,
@@ -55,30 +56,11 @@ export class StatusHandler extends Construct {
     // Grant DynamoDB read permissions
     props.stateTable.grantReadData(this.lambda);
 
-    // Add /status route to API Gateway using Cfn-level constructs
-    // to avoid circular dependency when API is from another stack
-    const statusResource = new apigateway.CfnResource(this, "StatusResource", {
-      restApiId: props.api.restApiId,
-      parentId: props.apiRootResourceId,
-      pathPart: "status",
-    });
+    // Grant read access to private key secret (for configuration check)
+    props.privateKeySecret.grantRead(this.lambda);
 
-    // Grant API Gateway permission to invoke the Lambda
-    this.lambda.addPermission("ApiGatewayInvoke", {
-      principal: new iam.ServicePrincipal("apigateway.amazonaws.com"),
-      sourceArn: `arn:aws:execute-api:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:${props.api.restApiId}/*/*/*`,
-    });
-
-    new apigateway.CfnMethod(this, "StatusMethod", {
-      restApiId: props.api.restApiId,
-      resourceId: statusResource.ref,
-      httpMethod: "GET",
-      authorizationType: "NONE",
-      integration: {
-        type: "AWS_PROXY",
-        integrationHttpMethod: "POST",
-        uri: `arn:aws:apigateway:${cdk.Stack.of(this).region}:lambda:path/2015-03-31/functions/${this.lambda.functionArn}/invocations`,
-      },
-    });
+    // Add /status GET route to the API Gateway
+    const statusResource = props.api.root.addResource("status");
+    statusResource.addMethod("GET", new apigateway.LambdaIntegration(this.lambda));
   }
 }

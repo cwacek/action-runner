@@ -14,10 +14,7 @@ function createTestStacks(app: cdk.App) {
     appProps: {
       vpc: foundation.vpc,
       runnerSecurityGroup: foundation.runnerSecurityGroup,
-      api: foundation.api,
-      apiRootResourceId: foundation.apiRootResourceId,
       privateKeySecret: foundation.privateKeySecret,
-      webhookSecret: foundation.webhookSecret,
       githubServerUrl: "https://github.example.com",
       githubAppId: "123456",
       presets: [
@@ -55,24 +52,25 @@ describe("SpotRunnerStack", () => {
     });
   });
 
-  test("does not create its own secrets (uses foundation)", () => {
+  test("creates API Gateway (now in app stack)", () => {
     const app = new cdk.App();
     const { appProps } = createTestStacks(app);
     const stack = new SpotRunnerStack(app, "TestStack", appProps);
     const template = Template.fromStack(stack);
 
-    // App stack should NOT create any secrets (they come from foundation)
-    template.resourceCountIs("AWS::SecretsManager::Secret", 0);
+    template.hasResourceProperties("AWS::ApiGateway::RestApi", {
+      Name: "spot-runner-webhook",
+    });
   });
 
-  test("does not create API Gateway (uses foundation)", () => {
+  test("creates webhook secret (now in app stack)", () => {
     const app = new cdk.App();
     const { appProps } = createTestStacks(app);
     const stack = new SpotRunnerStack(app, "TestStack", appProps);
     const template = Template.fromStack(stack);
 
-    // App stack should NOT create RestApi (it uses foundation's API)
-    template.resourceCountIs("AWS::ApiGateway::RestApi", 0);
+    // App stack should create the webhook secret
+    template.resourceCountIs("AWS::SecretsManager::Secret", 1);
   });
 
   test("creates Lambda functions", () => {
@@ -120,5 +118,17 @@ describe("SpotRunnerStack", () => {
         },
       },
     });
+  });
+
+  test("outputs webhook URL and webhook secret", () => {
+    const app = new cdk.App();
+    const { appProps } = createTestStacks(app);
+    const stack = new SpotRunnerStack(app, "TestStack", appProps);
+    const template = Template.fromStack(stack);
+
+    const outputs = template.findOutputs("*");
+    const outputKeys = Object.keys(outputs);
+    expect(outputKeys).toContain("WebhookUrl");
+    expect(outputKeys).toContain("WebhookSecretValue");
   });
 });

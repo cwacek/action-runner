@@ -67,7 +67,6 @@ describe("Isolate hang", () => {
       ttlDays: 7,
       configPrefix: "/test",
       api,
-      apiRootResourceId: api.root.resourceId,
     });
     Template.fromStack(stack);
     console.log("WebhookHandler: OK");

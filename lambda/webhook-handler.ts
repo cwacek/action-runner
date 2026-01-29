@@ -39,8 +39,21 @@ async function getPrivateKey(): Promise<string> {
   const response = await secretsClient.send(
     new GetSecretValueCommand({ SecretId: PRIVATE_KEY_SECRET_ARN })
   );
-  cachedPrivateKey = response.SecretString ?? "";
+  const value = response.SecretString ?? "";
+
+  if (!value || value.startsWith("PLACEHOLDER:")) {
+    throw new PrivateKeyNotConfiguredError();
+  }
+
+  cachedPrivateKey = value;
   return cachedPrivateKey;
+}
+
+class PrivateKeyNotConfiguredError extends Error {
+  constructor() {
+    super("GitHub App private key not configured. Upload your private key to the Secrets Manager secret.");
+    this.name = "PrivateKeyNotConfiguredError";
+  }
 }
 
 async function getWebhookSecret(): Promise<string> {
@@ -249,6 +262,17 @@ export async function handler(
       };
     }
   } catch (error) {
+    if (error instanceof PrivateKeyNotConfiguredError) {
+      console.error("Private key not configured:", error.message);
+      return {
+        statusCode: 503,
+        body: JSON.stringify({
+          error: "Service not configured",
+          message: error.message,
+        }),
+      };
+    }
+
     console.error("Webhook handler error:", error);
 
     return {
