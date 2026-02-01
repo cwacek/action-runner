@@ -43,16 +43,26 @@ cd spot-runner
 npm install
 ```
 
-### 2. Create a GitHub App
+### 2. Deploy the foundation stack
+
+The foundation stack creates long-lived infrastructure (VPC, security group, and a Secrets Manager secret for the GitHub App private key). Deploy it first:
+
+```bash
+npx cdk deploy SpotRunnerFoundationStack
+```
+
+Note the **PrivateKeySecretArn** from the stack outputs. You'll need it in the next step.
+
+### 3. Create a GitHub App
 
 On your GitHub Enterprise Server:
 
-1. Go to **Settings → Developer settings → GitHub Apps → New GitHub App**
+1. Go to **Settings > Developer settings > GitHub Apps > New GitHub App**
 2. Configure the app:
    - **Name**: `Spot Runner` (or your choice)
    - **Homepage URL**: Your organization URL
-   - **Webhook URL**: Leave blank for now (you'll update after deployment)
-   - **Webhook secret**: Generate a secure random string and save it
+   - **Webhook URL**: Leave blank for now (you'll update after deploying the app stack)
+   - **Webhook secret**: Leave blank for now (the app stack generates one automatically)
 3. Set permissions:
    - **Repository permissions**:
      - Actions: Read-only
@@ -66,21 +76,39 @@ On your GitHub Enterprise Server:
 6. Generate and download a **private key**
 7. Install the app on repositories/organizations that will use spot runners
 
-### 3. Configure presets
+### 4. Upload the private key to Secrets Manager
 
-Create or update `bin/app.ts` to configure your runner presets:
+Upload the private key you downloaded to the Secrets Manager secret created by the foundation stack:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id <PrivateKeySecretArn from step 2> \
+  --secret-string "$(cat path/to/private-key.pem)"
+```
+
+### 5. Configure and deploy the app stack
+
+The app stack contains all application resources (API Gateway, Lambdas, DynamoDB, Image Builder). It requires the GitHub App ID and server URL, passed via CDK context or environment variables.
+
+Edit `bin/app.ts` to configure your runner presets:
 
 ```typescript
+const foundation = new SpotRunnerFoundationStack(app, "SpotRunnerFoundationStack", {
+  env,
+});
+
 new SpotRunnerStack(app, "SpotRunnerStack", {
-  githubServerUrl: "https://github.your-company.com",
-  githubAppId: "123456",
-  githubAppPrivateKey: process.env.GITHUB_APP_PRIVATE_KEY!,
-  webhookSecret: process.env.WEBHOOK_SECRET!,
+  env,
+  vpc: foundation.vpc,
+  runnerSecurityGroup: foundation.runnerSecurityGroup,
+  privateKeySecret: foundation.privateKeySecret,
+  githubServerUrl,  // from CDK context or GITHUB_SERVER_URL env var
+  githubAppId,      // from CDK context or GITHUB_APP_ID env var
   presets: [
     {
       name: "linux-x64",
       architecture: "x86_64",
-      instanceTypes: ["m5.large", "m5.xlarge", "m5a.large"],
+      instanceTypes: ["m5.large", "m5.xlarge", "m5a.large", "m5a.xlarge"],
       labels: ["linux", "ubuntu"],
     },
     {
@@ -93,15 +121,12 @@ new SpotRunnerStack(app, "SpotRunnerStack", {
 });
 ```
 
-### 4. Deploy the stack
+Deploy the app stack:
 
 ```bash
-# Set required secrets
-export GITHUB_APP_PRIVATE_KEY="$(cat path/to/private-key.pem)"
-export WEBHOOK_SECRET="your-webhook-secret"
-
-# Deploy
-npx cdk deploy
+npx cdk deploy SpotRunnerStack \
+  -c githubServerUrl=https://github.your-company.com \
+  -c githubAppId=123456
 ```
 
 The deployment will:
@@ -109,9 +134,20 @@ The deployment will:
 - Automatically trigger the first AMI build
 - Initialize the system in "building" state
 
-### 5. Check status
+Note the **WebhookUrl** and **WebhookSecretValue** from the stack outputs.
 
-After deployment, check the system status to see when AMIs are ready:
+### 6. Configure the GitHub App webhook
+
+Update your GitHub App with the outputs from the app stack:
+
+1. Go to your GitHub App settings
+2. Set **Webhook URL** to the `WebhookUrl` output (e.g., `https://xxx.execute-api.us-east-1.amazonaws.com/prod/webhook`)
+3. Set **Webhook secret** to the `WebhookSecretValue` output
+4. Ensure **Webhook active** is checked
+
+### 7. Check status
+
+Check the system status to see when AMIs are ready:
 
 ```bash
 # Get status endpoint URL from stack outputs
@@ -130,14 +166,6 @@ curl https://xxx.execute-api.us-east-1.amazonaws.com/prod/status
 ```
 
 Wait until all presets show `"status": "ready"` before using runners. This typically takes 20-30 minutes for the first build.
-
-### 7. Configure the webhook URL
-
-After deployment, the stack outputs the webhook URL. Update your GitHub App:
-
-1. Go to your GitHub App settings
-2. Set **Webhook URL** to the output URL (e.g., `https://xxx.execute-api.us-east-1.amazonaws.com/prod/webhook`)
-3. Ensure **Webhook active** is checked
 
 ### 8. Use in workflows
 
@@ -258,25 +286,16 @@ Spot Runner requires an AMI with the GitHub Actions runner pre-installed. You ha
 
 ### Option 1: EC2 Image Builder (Recommended)
 
-The stack includes an EC2 Image Builder pipeline that creates ready-to-use AMIs. The pipeline builds:
+The app stack includes an EC2 Image Builder pipeline per preset that creates ready-to-use AMIs. The pipeline builds:
 
 - Ubuntu 22.04 LTS base
 - Docker and common build tools
 - GitHub Actions runner v2.331.0 (SHA256 verified)
 - Pre-pulled Docker images: node:20, python:3.11, golang:1.21, alpine:3.19, ubuntu:22.04
 
-To customize the pipeline (e.g., add more Docker images):
+AMIs are managed automatically. When Image Builder completes a build, the AMI Update Lambda updates the preset's SSM config and DynamoDB state. No manual AMI ID management is required.
 
-```typescript
-new RunnerImagePipeline(this, "ImagePipeline", {
-  vpc: this.vpc,
-  subnet: this.vpc.privateSubnets[0],
-  additionalDockerImages: ["your-registry/custom-image:tag"],
-  buildSchedule: "cron(0 0 ? * SUN *)", // Weekly rebuilds
-});
-```
-
-After running the pipeline, update your SSM configuration with the new AMI ID.
+To pre-pull additional Docker images, add them to the preset's `additionalDockerImages` field in `bin/app.ts`.
 
 ### Option 2: Bring Your Own AMI
 
@@ -302,21 +321,35 @@ sudo chown -R ubuntu:ubuntu /opt/actions-runner
 
 ## Architecture
 
+### Stacks
+
+The infrastructure is split into two CDK stacks for faster iteration:
+
+| Stack | Resources | Change Frequency |
+|-------|-----------|-----------------|
+| **SpotRunnerFoundationStack** | VPC, NAT gateway, security group, private key secret | Rarely changes |
+| **SpotRunnerStack** | API Gateway, Lambdas, DynamoDB, Image Builder, SSM configs, webhook secret | Frequently iterated |
+
+This separation means you can tear down and redeploy the app stack without waiting for VPC/NAT gateway recreation.
+
 ### Components
 
-| Component | Description |
-|-----------|-------------|
-| **Webhook Lambda** | Receives GitHub webhooks, validates signatures, provisions runners |
-| **Cleanup Lambda** | Scheduled function that terminates stuck/orphaned instances |
-| **AMI Update Lambda** | Processes Image Builder events, updates AMI state and SSM configs |
-| **Status Lambda** | Provides `/status` API endpoint for system health |
-| **DynamoDB Table** | Tracks runner state and AMI lifecycle |
-| **API Gateway** | HTTPS endpoint for webhooks and status API |
-| **EventBridge** | Routes Image Builder completion events |
-| **Image Builder** | Creates runner AMIs per preset |
-| **Launch Template** | EC2 configuration for runner instances |
-| **Secrets Manager** | Stores GitHub App private key and webhook secret |
-| **SSM Parameters** | Stores runner configurations (auto-managed) |
+| Component | Stack | Description |
+|-----------|-------|-------------|
+| **VPC** | Foundation | VPC with public and private subnets |
+| **Runner Security Group** | Foundation | Security group for runner instances |
+| **Private Key Secret** | Foundation | Secrets Manager secret for GitHub App private key |
+| **API Gateway** | App | HTTPS endpoint for webhooks and status API |
+| **Webhook Secret** | App | Auto-generated webhook secret for GitHub signature validation |
+| **Webhook Lambda** | App | Receives GitHub webhooks, validates signatures, provisions runners |
+| **Cleanup Lambda** | App | Scheduled function that terminates stuck/orphaned instances |
+| **AMI Update Lambda** | App | Processes Image Builder events, updates AMI state and SSM configs |
+| **Status Lambda** | App | Provides `/status` API endpoint for system health |
+| **DynamoDB Table** | App | Tracks runner state and AMI lifecycle |
+| **EventBridge** | App | Routes Image Builder completion events |
+| **Image Builder** | App | Creates runner AMIs per preset |
+| **Launch Template** | App | EC2 configuration for runner instances |
+| **SSM Parameters** | App | Stores runner configurations (auto-managed) |
 
 ### Job Provisioning Flow
 
@@ -347,6 +380,7 @@ sudo chown -R ubuntu:ubuntu /opt/actions-runner
 - **VPC isolation**: Runners launch in your VPC
 - **IMDSv2 required**: Instance metadata secured
 - **SHA256 verification**: Runner binary verified against hardcoded checksums
+- **Secrets Manager**: Private key and webhook secret stored securely (never passed as env vars)
 
 ## Troubleshooting
 
@@ -355,6 +389,7 @@ sudo chown -R ubuntu:ubuntu /opt/actions-runner
 1. Check CloudWatch Logs for the webhook Lambda
 2. Verify the GitHub App is installed on the repository
 3. Check the `spotrunner/*` label is present in the workflow
+4. Verify the private key has been uploaded to Secrets Manager (check `/status` endpoint for warnings)
 
 ### Spot capacity unavailable
 
@@ -362,12 +397,17 @@ The runner will automatically fall back to on-demand if `spotStrategy` is `spotP
 
 ### Job timeout
 
-Default timeout is 1 hour. Increase `timeout` in SSM configuration for longer jobs:
+Default timeout is 1 hour. Configure `timeout` in the preset definition in `bin/app.ts` and redeploy:
 
-```bash
-aws ssm put-parameter --name "/spot-runner/configs/linux-x64" \
-  --type String --overwrite \
-  --value '{"timeout": 14400, ...}'  # 4 hours
+```typescript
+presets: [
+  {
+    name: "linux-x64",
+    architecture: "x86_64",
+    timeout: 240,  // 4 hours
+    // ...
+  },
+]
 ```
 
 ### Orphaned instances
@@ -389,8 +429,17 @@ npm run lint
 # Synthesize CloudFormation
 npx cdk synth
 
-# Deploy to dev environment
-npx cdk deploy --context env=dev
+# Deploy foundation stack (first time / infrastructure changes)
+npx cdk deploy SpotRunnerFoundationStack
+
+# Deploy app stack
+npx cdk deploy SpotRunnerStack \
+  -c githubServerUrl=https://github.your-company.com \
+  -c githubAppId=123456
+
+# Destroy (app stack first, then foundation)
+npx cdk destroy SpotRunnerStack
+npx cdk destroy SpotRunnerFoundationStack
 ```
 
 ## License
