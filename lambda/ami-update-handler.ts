@@ -1,66 +1,76 @@
 import { EventBridgeEvent } from "aws-lambda";
 import { SSMClient, GetParameterCommand, PutParameterCommand } from "@aws-sdk/client-ssm";
+import { ImagebuilderClient, GetImageCommand } from "@aws-sdk/client-imagebuilder";
 import { upsertAmiState, getAmiState } from "./lib/ami-state";
 
 const ssmClient = new SSMClient({});
+const imagebuilderClient = new ImagebuilderClient({});
 const CONFIG_PREFIX = process.env.CONFIG_PREFIX ?? "/spot-runner/configs";
 
 /**
  * Image Builder state change event detail structure.
+ * Note: The ARN is in event.resources[0], NOT in the detail object.
+ * The detail only contains state information.
  */
 interface ImageBuilderStateChangeDetail {
-  "image-build-version-arn": string;
+  "image-build-version-arn"?: string;
   state: {
     status: "AVAILABLE" | "FAILED" | "CANCELLED";
     reason?: string;
   };
-  "output-resources"?: {
-    amis?: Array<{
-      region: string;
-      image: string; // AMI ID
-    }>;
+  "previous-state"?: {
+    status: string;
   };
 }
 
 /**
  * Extract preset name from Image Builder ARN.
- * ARN format: arn:aws:imagebuilder:region:account:image/spot-runner-<preset-name>-<date>/version
  *
- * Pipeline name format: spot-runner-<preset-name>
- * Image name format: spot-runner-<preset-name>-<date>
+ * ARN formats seen in practice:
+ * - arn:aws:imagebuilder:region:account:image/spotrunnerstack-<preset>/version/build
+ *   (CDK recipe name: ${stackName}-${presetName}, lowercased in ARN)
+ * - arn:aws:imagebuilder:region:account:image/spot-runner-<preset>-<date>/version
+ *   (distribution name: spot-runner-${presetName}-{{buildDate}})
+ *
+ * Strategy: extract image name from ARN, then strip known prefixes.
+ * The CDK stack name varies, so we match the pattern: <stackname>-<preset>/version
  */
 function extractPresetName(arn: string): string | null {
-  // Extract image name from ARN
+  // Extract image name from ARN: everything between "image/" and the next "/"
   const match = arn.match(/image\/([^/]+)\//);
   if (!match) return null;
 
   const imageName = match[1];
+  console.log(`Extracting preset name from image name: ${imageName}`);
 
-  // Image name format: spot-runner-<preset-name>-<date>
-  // We need to extract the preset name between "spot-runner-" and the date suffix
-  // Date format is typically YYYY-MM-DD or similar timestamp
+  // Pattern 1: CDK-generated recipe name "<stackname>-<preset>"
+  // The stack name is "spotrunnerstack" (lowercased from SpotRunnerStack)
+  // Match: strip everything up to and including "stack-" prefix
+  const stackPattern = /stack-(.+)$/i;
+  const stackMatch = imageName.match(stackPattern);
+  if (stackMatch) {
+    return stackMatch[1];
+  }
 
-  // First try: match spot-runner-<preset>-YYYY-MM-DD pattern
+  // Pattern 2: Distribution name "spot-runner-<preset>-<date>"
   const datePattern = /^spot-runner-(.+?)-\d{4}-\d{2}-\d{2}/;
   const dateMatch = imageName.match(datePattern);
   if (dateMatch) {
     return dateMatch[1];
   }
 
-  // Second try: match spot-runner-<preset>-<any-timestamp-like-suffix>
-  // Timestamp suffixes often contain digits
+  // Pattern 3: Distribution name "spot-runner-<preset>-<timestamp>"
   const timestampPattern = /^spot-runner-(.+?)-\d+/;
   const timestampMatch = imageName.match(timestampPattern);
   if (timestampMatch) {
     return timestampMatch[1];
   }
 
-  // Third try: if image name starts with spot-runner-, take everything after
+  // Pattern 4: Starts with "spot-runner-"
   if (imageName.startsWith("spot-runner-")) {
     return imageName.slice("spot-runner-".length);
   }
 
-  // Fallback: use the full image name
   console.warn(`Could not parse preset name from image: ${imageName}`);
   return imageName;
 }
@@ -106,8 +116,16 @@ export async function handler(
   console.log("Received Image Builder event:", JSON.stringify(event, null, 2));
 
   const detail = event.detail;
-  const buildArn = detail["image-build-version-arn"];
   const status = detail.state.status;
+
+  // ARN is in event.resources[0], not in the detail object
+  const buildArn = detail["image-build-version-arn"] ?? event.resources?.[0];
+  if (!buildArn) {
+    console.error("No image ARN found in event detail or resources");
+    return;
+  }
+
+  console.log(`Image ARN: ${buildArn}`);
 
   // Extract preset name from ARN
   const presetName = extractPresetName(buildArn);
@@ -119,13 +137,18 @@ export async function handler(
   console.log(`Processing ${status} event for preset: ${presetName}`);
 
   if (status === "AVAILABLE") {
-    // Extract AMI ID from output resources
-    const amis = detail["output-resources"]?.amis ?? [];
+    // Look up the AMI ID via the Image Builder API since the event detail
+    // does not include output-resources
+    const imageResponse = await imagebuilderClient.send(
+      new GetImageCommand({ imageBuildVersionArn: buildArn })
+    );
+
+    const outputAmis = imageResponse.image?.outputResources?.amis ?? [];
     const currentRegion = process.env.AWS_REGION;
-    const amiInfo = amis.find((a) => a.region === currentRegion) ?? amis[0];
+    const amiInfo = outputAmis.find((a) => a.region === currentRegion) ?? outputAmis[0];
 
     if (!amiInfo?.image) {
-      console.error("No AMI ID found in event output resources");
+      console.error("No AMI ID found in Image Builder output resources");
       return;
     }
 

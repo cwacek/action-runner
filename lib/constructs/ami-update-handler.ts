@@ -67,6 +67,16 @@ export class AmiUpdateHandler extends Construct {
       })
     );
 
+    // Grant Image Builder read permission to look up AMI from build output
+    this.lambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["imagebuilder:GetImage"],
+        resources: [
+          `arn:aws:imagebuilder:${stack.region}:${stack.account}:image/*`,
+        ],
+      })
+    );
+
     // Add Lambda as target for Image Builder events
     props.imageBuilderEventRule.addTarget(new targets.LambdaFunction(this.lambda));
   }
