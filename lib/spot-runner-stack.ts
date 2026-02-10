@@ -355,6 +355,8 @@ export class SpotRunnerStack extends cdk.Stack {
       stateTable: this.stateTable.table,
       api,
       privateKeySecret,
+      githubAppId: props.githubAppId,
+      githubServerUrl: props.githubServerUrl,
     });
 
     // Stack outputs

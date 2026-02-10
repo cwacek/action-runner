@@ -22,6 +22,16 @@ export interface StatusHandlerProps {
    * Secret containing the GitHub App private key (for configuration status check).
    */
   readonly privateKeySecret: secretsmanager.ISecret;
+
+  /**
+   * GitHub App ID.
+   */
+  readonly githubAppId: string;
+
+  /**
+   * GitHub Enterprise Server URL (e.g., https://github.example.com).
+   */
+  readonly githubServerUrl: string;
 }
 
 /**
@@ -45,6 +55,8 @@ export class StatusHandler extends Construct {
       environment: {
         STATE_TABLE_NAME: props.stateTable.tableName,
         PRIVATE_KEY_SECRET_ARN: props.privateKeySecret.secretArn,
+        GITHUB_APP_ID: props.githubAppId,
+        GITHUB_SERVER_URL: props.githubServerUrl,
       },
       bundling: {
         minify: true,
