@@ -357,6 +357,7 @@ export class SpotRunnerStack extends cdk.Stack {
       privateKeySecret,
       githubAppId: props.githubAppId,
       githubServerUrl: props.githubServerUrl,
+      configPrefix,
     });
 
     // Stack outputs

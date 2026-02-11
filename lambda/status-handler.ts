@@ -1,15 +1,25 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { queryAllAmiStates, AmiState, AmiStatus } from "./lib/ami-state";
+import { queryAllAmiStates, upsertAmiState, AmiState, AmiStatus } from "./lib/ami-state";
 import { generateAppJwt } from "./lib/github-app";
+import { updateSsmConfig } from "./lib/ssm-config";
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
+import {
+  ImagebuilderClient,
+  ListImagePipelinesCommand,
+  ListImagePipelineImagesCommand,
+  GetImageCommand,
+} from "@aws-sdk/client-imagebuilder";
 
 const secretsClient = new SecretsManagerClient({});
+const imagebuilderClient = new ImagebuilderClient({});
 const PRIVATE_KEY_SECRET_ARN = process.env.PRIVATE_KEY_SECRET_ARN ?? "";
 const GITHUB_APP_ID = process.env.GITHUB_APP_ID ?? "";
 const GITHUB_SERVER_URL = process.env.GITHUB_SERVER_URL ?? "";
+
+const STALE_BUILDING_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
  * Overall system status derived from preset statuses and configuration.
@@ -132,6 +142,121 @@ async function checkGitHubConnectivity(privateKey: string): Promise<GitHubConnec
   return cachedGitHubStatus;
 }
 
+// Cache reconciliation so it only runs once per Lambda container
+let reconciliationDone = false;
+
+/**
+ * Reconcile stale "building" AMI states against actual Image Builder pipeline state.
+ * Returns true if any records were updated (caller should re-query DynamoDB).
+ */
+async function reconcileStaleBuildingPresets(amiStates: AmiState[]): Promise<boolean> {
+  if (reconciliationDone) return false;
+  reconciliationDone = true;
+
+  const now = Date.now();
+  const stalePresets = amiStates.filter(
+    (s) => s.status === "building" && (now - new Date(s.updatedAt).getTime()) > STALE_BUILDING_THRESHOLD_MS
+  );
+
+  if (stalePresets.length === 0) return false;
+
+  console.log(`Found ${stalePresets.length} stale building preset(s), reconciling...`);
+  let anyUpdated = false;
+
+  for (const preset of stalePresets) {
+    try {
+      const updated = await reconcilePreset(preset);
+      if (updated) anyUpdated = true;
+    } catch (error) {
+      console.error(`Failed to reconcile preset ${preset.presetName}:`, error);
+    }
+  }
+
+  return anyUpdated;
+}
+
+/**
+ * Reconcile a single stale preset against Image Builder.
+ */
+async function reconcilePreset(preset: AmiState): Promise<boolean> {
+  const pipelineName = `spot-runner-${preset.presetName}`;
+  console.log(`Reconciling preset ${preset.presetName}, looking up pipeline: ${pipelineName}`);
+
+  // Find the pipeline by name
+  const pipelinesResponse = await imagebuilderClient.send(
+    new ListImagePipelinesCommand({
+      filters: [{ name: "name", values: [pipelineName] }],
+    })
+  );
+
+  const pipeline = pipelinesResponse.imagePipelineList?.[0];
+  if (!pipeline?.arn) {
+    console.warn(`No pipeline found for preset ${preset.presetName}`);
+    return false;
+  }
+
+  // Get the latest image from this pipeline
+  const imagesResponse = await imagebuilderClient.send(
+    new ListImagePipelineImagesCommand({
+      imagePipelineArn: pipeline.arn,
+      maxResults: 1,
+    })
+  );
+
+  const latestImageSummary = imagesResponse.imageSummaryList?.[0];
+  if (!latestImageSummary?.arn) {
+    console.log(`No images found for pipeline ${pipelineName}`);
+    return false;
+  }
+
+  // Get full image details to check state and AMI output
+  const imageResponse = await imagebuilderClient.send(
+    new GetImageCommand({ imageBuildVersionArn: latestImageSummary.arn })
+  );
+
+  const image = imageResponse.image;
+  const imageState = image?.state?.status;
+  console.log(`Pipeline ${pipelineName} latest image state: ${imageState}`);
+
+  if (imageState === "AVAILABLE") {
+    // Build completed — extract AMI and update state
+    const outputAmis = image?.outputResources?.amis ?? [];
+    const currentRegion = process.env.AWS_REGION;
+    const amiInfo = outputAmis.find((a) => a.region === currentRegion) ?? outputAmis[0];
+
+    if (!amiInfo?.image) {
+      console.error(`Image AVAILABLE but no AMI found in output for ${preset.presetName}`);
+      return false;
+    }
+
+    console.log(`Reconciliation: preset ${preset.presetName} is actually ready with AMI ${amiInfo.image}`);
+    const updated = await upsertAmiState({
+      presetName: preset.presetName,
+      amiId: amiInfo.image,
+      status: "ready",
+      buildId: latestImageSummary.arn,
+    });
+
+    if (updated) {
+      await updateSsmConfig(preset.presetName, amiInfo.image);
+    }
+    return updated;
+  } else if (imageState === "FAILED" || imageState === "CANCELLED") {
+    console.log(`Reconciliation: preset ${preset.presetName} build ${imageState?.toLowerCase()}`);
+    return await upsertAmiState({
+      presetName: preset.presetName,
+      amiId: preset.amiId,
+      status: "failed",
+      buildId: latestImageSummary.arn,
+      errorMessage: `Build ${imageState.toLowerCase()} (detected by reconciliation)`,
+    });
+  }
+
+  // Still building (BUILDING, TESTING, INTEGRATING, etc.) — leave as-is
+  console.log(`Preset ${preset.presetName} is legitimately building (state: ${imageState})`);
+  return false;
+}
+
 /**
  * Aggregate preset statuses into overall system status.
  */
@@ -236,10 +361,17 @@ export async function handler(
 
   try {
     // Check configuration and AMI states in parallel
-    const [privateKeyConfigured, amiStates] = await Promise.all([
+    let [privateKeyConfigured, amiStates] = await Promise.all([
       isPrivateKeyConfigured(),
       queryAllAmiStates(),
     ]);
+
+    // Reconcile stale "building" states against actual Image Builder state
+    const reconciled = await reconcileStaleBuildingPresets(amiStates);
+    if (reconciled) {
+      // Re-query to get corrected states
+      amiStates = await queryAllAmiStates();
+    }
 
     // Check GitHub connectivity (needs the private key value)
     let githubStatus: GitHubConnectivityStatus;
