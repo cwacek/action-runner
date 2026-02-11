@@ -1,6 +1,6 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { queryAllAmiStates, upsertAmiState, AmiState, AmiStatus } from "./lib/ami-state";
-import { generateAppJwt } from "./lib/github-app";
+import { generateAppJwt, getApiBaseUrl } from "./lib/github-app";
 import { updateSsmConfig } from "./lib/ssm-config";
 import {
   SecretsManagerClient,
@@ -92,7 +92,7 @@ async function isPrivateKeyConfigured(): Promise<boolean> {
 let cachedGitHubStatus: GitHubConnectivityStatus | null = null;
 
 /**
- * Check GitHub connectivity by generating a JWT and calling GET /api/v3/app.
+ * Check GitHub connectivity by generating a JWT and calling GET /app.
  * Requires privateKey to have been fetched already.
  */
 async function checkGitHubConnectivity(privateKey: string): Promise<GitHubConnectivityStatus> {
@@ -100,7 +100,7 @@ async function checkGitHubConnectivity(privateKey: string): Promise<GitHubConnec
 
   try {
     const jwt = generateAppJwt(GITHUB_APP_ID, privateKey);
-    const apiUrl = `${GITHUB_SERVER_URL}/api/v3/app`;
+    const apiUrl = `${getApiBaseUrl(GITHUB_SERVER_URL)}/app`;
 
     const response = await fetch(apiUrl, {
       method: "GET",

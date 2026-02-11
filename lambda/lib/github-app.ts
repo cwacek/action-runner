@@ -7,6 +7,24 @@ export interface GitHubAppConfig {
   serverUrl: string; // e.g., https://github.example.com
 }
 
+/**
+ * Get the correct API base URL for a GitHub server.
+ * For github.com, the API is at api.github.com (no /api/v3 prefix).
+ * For GitHub Enterprise Server, the API is at <hostname>/api/v3.
+ */
+export function getApiBaseUrl(serverUrl: string): string {
+  const normalized = serverUrl.replace(/\/+$/, "");
+  try {
+    const url = new URL(normalized);
+    if (url.hostname === "github.com") {
+      return "https://api.github.com";
+    }
+  } catch {
+    // Fall through to default
+  }
+  return `${normalized}/api/v3`;
+}
+
 interface CachedToken {
   token: string;
   expiresAt: number;
@@ -66,7 +84,7 @@ export async function getInstallationToken(
   }
 
   const jwt = generateAppJwt(config.appId, config.privateKey);
-  const apiUrl = `${config.serverUrl}/api/v3/app/installations/${installationId}/access_tokens`;
+  const apiUrl = `${getApiBaseUrl(config.serverUrl)}/app/installations/${installationId}/access_tokens`;
 
   const response = await fetch(apiUrl, {
     method: "POST",
@@ -102,7 +120,7 @@ export async function getJitRunnerToken(
   labels: string[]
 ): Promise<{ runner_jit_config: string }> {
   const token = await getInstallationToken(config, installationId);
-  const apiUrl = `${config.serverUrl}/api/v3/repos/${repoFullName}/actions/runners/generate-jitconfig`;
+  const apiUrl = `${getApiBaseUrl(config.serverUrl)}/repos/${repoFullName}/actions/runners/generate-jitconfig`;
 
   const response = await fetch(apiUrl, {
     method: "POST",
