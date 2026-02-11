@@ -195,19 +195,35 @@ async function reconcilePreset(preset: AmiState): Promise<boolean> {
     return false;
   }
 
-  // Get the latest image from this pipeline
+  // Get recent images from this pipeline and sort by dateCreated to find the latest.
+  // The API does not guarantee sort order, so we fetch a page and sort client-side.
   const imagesResponse = await imagebuilderClient.send(
     new ListImagePipelineImagesCommand({
       imagePipelineArn: pipeline.arn,
-      maxResults: 1,
+      maxResults: 10,
     })
   );
 
-  const latestImageSummary = imagesResponse.imageSummaryList?.[0];
+  const images = imagesResponse.imageSummaryList ?? [];
+  if (images.length === 0) {
+    console.log(`No images found for pipeline ${pipelineName}`);
+    return false;
+  }
+
+  // Sort descending by dateCreated to get the most recent image
+  images.sort((a, b) => {
+    const dateA = a.dateCreated ? new Date(a.dateCreated).getTime() : 0;
+    const dateB = b.dateCreated ? new Date(b.dateCreated).getTime() : 0;
+    return dateB - dateA;
+  });
+
+  const latestImageSummary = images[0];
   if (!latestImageSummary?.arn) {
     console.log(`No images found for pipeline ${pipelineName}`);
     return false;
   }
+
+  console.log(`Pipeline ${pipelineName}: selected image created ${latestImageSummary.dateCreated} (${images.length} images found)`);
 
   // Get full image details to check state and AMI output
   const imageResponse = await imagebuilderClient.send(
