@@ -1,6 +1,7 @@
 import * as cdk from "aws-cdk-lib";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaNodejs from "aws-cdk-lib/aws-lambda-nodejs";
+import * as logs from "aws-cdk-lib/aws-logs";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
@@ -42,6 +43,7 @@ export class AmiUpdateHandler extends Construct {
       architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.minutes(1),
       memorySize: 256,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       environment: {
         STATE_TABLE_NAME: props.stateTable.tableName,
         CONFIG_PREFIX: props.configPrefix,

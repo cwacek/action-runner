@@ -1,6 +1,7 @@
 import * as cdk from "aws-cdk-lib";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaNodejs from "aws-cdk-lib/aws-lambda-nodejs";
+import * as logs from "aws-cdk-lib/aws-logs";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
@@ -61,6 +62,7 @@ export class CleanupHandler extends Construct {
       architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       environment: {
         STATE_TABLE_NAME: props.stateTable.tableName,
         TTL_DAYS: String(props.ttlDays),
