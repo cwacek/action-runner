@@ -26,7 +26,11 @@ export interface ParsedLabel {
  *   - spotrunner/linux-arm64/ram=16
  */
 export function parseSpotrunnerLabel(labels: string[]): ParsedLabel | null {
-  for (const label of labels) {
+  // GitHub Actions may send comma-separated runs-on values as a single string
+  // (e.g., "self-hosted,spotrunner/linux-x64"), so split on commas first.
+  const expanded = labels.flatMap((l) => l.split(",").map((s) => s.trim()));
+
+  for (const label of expanded) {
     const normalized = label.toLowerCase().trim();
 
     if (!normalized.startsWith("spotrunner/")) {
