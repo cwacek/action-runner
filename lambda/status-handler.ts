@@ -142,28 +142,43 @@ async function checkGitHubConnectivity(privateKey: string): Promise<GitHubConnec
   return cachedGitHubStatus;
 }
 
-// Cache reconciliation so it only runs once per Lambda container
-let reconciliationDone = false;
+// Cache presets that have been reconciled to "ready" — no need to re-check those.
+// Presets in "building" or "failed" state are always re-checked.
+const reconciledReadyPresets = new Set<string>();
 
 /**
- * Reconcile stale "building" AMI states against actual Image Builder pipeline state.
+ * Reconcile unhealthy AMI states against actual Image Builder pipeline state.
+ * Checks both stale "building" and "failed" presets.
  * Returns true if any records were updated (caller should re-query DynamoDB).
  */
-async function reconcileStaleBuildingPresets(amiStates: AmiState[]): Promise<boolean> {
-  if (reconciliationDone) return false;
-  reconciliationDone = true;
-
+async function reconcileUnhealthyPresets(amiStates: AmiState[]): Promise<boolean> {
   const now = Date.now();
-  const stalePresets = amiStates.filter(
-    (s) => s.status === "building" && (now - new Date(s.updatedAt).getTime()) > STALE_BUILDING_THRESHOLD_MS
-  );
+  const presetsToCheck = amiStates.filter((s) => {
+    // Skip presets already confirmed ready by a previous reconciliation
+    if (reconciledReadyPresets.has(s.presetName)) return false;
 
-  if (stalePresets.length === 0) return false;
+    // Check stale "building" presets (stuck for longer than threshold)
+    if (s.status === "building" && (now - new Date(s.updatedAt).getTime()) > STALE_BUILDING_THRESHOLD_MS) {
+      return true;
+    }
 
-  console.log(`Found ${stalePresets.length} stale building preset(s), reconciling...`);
+    // Check "failed" presets (pipeline may have a newer successful build)
+    if (s.status === "failed") {
+      return true;
+    }
+
+    return false;
+  });
+
+  if (presetsToCheck.length === 0) {
+    console.log("Reconciliation: no unhealthy presets to check");
+    return false;
+  }
+
+  console.log(`Reconciling ${presetsToCheck.length} unhealthy preset(s): ${presetsToCheck.map((p) => `${p.presetName}(${p.status})`).join(", ")}`);
   let anyUpdated = false;
 
-  for (const preset of stalePresets) {
+  for (const preset of presetsToCheck) {
     try {
       const updated = await reconcilePreset(preset);
       if (updated) anyUpdated = true;
@@ -256,6 +271,8 @@ async function reconcilePreset(preset: AmiState): Promise<boolean> {
     if (updated) {
       await updateSsmConfig(preset.presetName, amiInfo.image);
     }
+    // Cache this preset as reconciled-to-ready so we don't re-check it
+    reconciledReadyPresets.add(preset.presetName);
     return updated;
   } else if (imageState === "FAILED" || imageState === "CANCELLED") {
     console.log(`Reconciliation: preset ${preset.presetName} build ${imageState?.toLowerCase()}`);
@@ -382,11 +399,14 @@ export async function handler(
       queryAllAmiStates(),
     ]);
 
-    // Reconcile stale "building" states against actual Image Builder state
-    const reconciled = await reconcileStaleBuildingPresets(amiStates);
+    console.log(`AMI states: ${amiStates.map((s) => `${s.presetName}=${s.status}${s.amiId ? `(${s.amiId})` : ""}`).join(", ") || "none"}`);
+
+    // Reconcile unhealthy states (stale building + failed) against actual Image Builder state
+    const reconciled = await reconcileUnhealthyPresets(amiStates);
     if (reconciled) {
       // Re-query to get corrected states
       amiStates = await queryAllAmiStates();
+      console.log(`AMI states after reconciliation: ${amiStates.map((s) => `${s.presetName}=${s.status}${s.amiId ? `(${s.amiId})` : ""}`).join(", ")}`);
     }
 
     // Check GitHub connectivity (needs the private key value)
