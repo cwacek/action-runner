@@ -90,11 +90,17 @@ export async function handler(
   console.log("Received webhook event");
 
   try {
+    // Decode body if API Gateway base64-encoded it, so we validate the same
+    // bytes GitHub signed and parse the correct JSON.
+    const rawBody = event.isBase64Encoded
+      ? Buffer.from(event.body ?? "", "base64").toString("utf-8")
+      : event.body ?? "";
+
     // Validate webhook signature
     const signature = event.headers["x-hub-signature-256"];
     const webhookSecret = await getWebhookSecret();
 
-    if (!validateWebhookSignature(event.body ?? "", signature, webhookSecret)) {
+    if (!validateWebhookSignature(rawBody, signature, webhookSecret)) {
       console.error("Invalid webhook signature");
       return {
         statusCode: 401,
@@ -103,7 +109,7 @@ export async function handler(
     }
 
     // Parse payload
-    const payload = JSON.parse(event.body ?? "{}") as WorkflowJobPayload;
+    const payload = JSON.parse(rawBody || "{}") as WorkflowJobPayload;
     const eventType = event.headers["x-github-event"];
 
     // Only handle workflow_job events
