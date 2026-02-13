@@ -196,3 +196,49 @@ export async function queryStaleRunners(
   );
   return (result.Items as RunnerState[]) ?? [];
 }
+
+/**
+ * Count runners with a given status. Uses COUNT mode to avoid fetching items.
+ */
+export async function countRunnersByStatus(
+  status: RunnerStatus
+): Promise<number> {
+  const result = await docClient.send(
+    new QueryCommand({
+      TableName: TABLE_NAME,
+      IndexName: "status-index",
+      KeyConditionExpression: "#status = :status",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: { ":status": status },
+      Select: "COUNT",
+    })
+  );
+  return result.Count ?? 0;
+}
+
+/**
+ * Count runners with a given status created on or after a timestamp.
+ * Uses COUNT mode to avoid fetching items.
+ */
+export async function countRunnersByStatusSince(
+  status: RunnerStatus,
+  sinceIso: string
+): Promise<number> {
+  const result = await docClient.send(
+    new QueryCommand({
+      TableName: TABLE_NAME,
+      IndexName: "status-index",
+      KeyConditionExpression: "#status = :status AND #createdAt >= :since",
+      ExpressionAttributeNames: {
+        "#status": "status",
+        "#createdAt": "createdAt",
+      },
+      ExpressionAttributeValues: {
+        ":status": status,
+        ":since": sinceIso,
+      },
+      Select: "COUNT",
+    })
+  );
+  return result.Count ?? 0;
+}

@@ -1,5 +1,6 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { queryAllAmiStates, upsertAmiState, AmiState, AmiStatus } from "./lib/ami-state";
+import { countRunnersByStatus, countRunnersByStatusSince } from "./lib/state";
 import { generateAppJwt, getApiBaseUrl } from "./lib/github-app";
 import { updateSsmConfig } from "./lib/ssm-config";
 import {
@@ -40,6 +41,22 @@ interface GitHubConnectivityStatus {
 /**
  * Status API response format.
  */
+interface RunnerCounts {
+  pending: number;
+  provisioning: number;
+  running: number;
+}
+
+interface ActivityWindow {
+  completed: number;
+  failed: number;
+}
+
+interface RecentActivity {
+  lastHour: ActivityWindow;
+  last24Hours: ActivityWindow;
+}
+
 interface StatusResponse {
   status: SystemStatus;
   configuration: {
@@ -47,6 +64,8 @@ interface StatusResponse {
   };
   github: GitHubConnectivityStatus;
   presets: PresetStatus[];
+  runners: RunnerCounts;
+  recentActivity: RecentActivity;
   message: string;
 }
 
@@ -327,6 +346,28 @@ function aggregateStatus(
 }
 
 /**
+ * Format runner counts into a human-readable suffix.
+ * Returns empty string if no runners are active.
+ */
+function formatRunnerContext(runners: RunnerCounts): string {
+  const total = runners.pending + runners.provisioning + runners.running;
+  if (total === 0) return "";
+
+  // If all active runners are in a single state, use a simple message
+  const nonZero = [
+    runners.pending > 0 ? `${runners.pending} pending` : "",
+    runners.provisioning > 0 ? `${runners.provisioning} provisioning` : "",
+    runners.running > 0 ? `${runners.running} running` : "",
+  ].filter(Boolean);
+
+  if (nonZero.length === 1) {
+    return `${total} runner${total > 1 ? "s" : ""} ${nonZero[0].split(" ")[1]}`;
+  }
+
+  return nonZero.join(" / ");
+}
+
+/**
  * Generate human-readable status message.
  */
 function generateMessage(
@@ -334,6 +375,7 @@ function generateMessage(
   status: SystemStatus,
   privateKeyConfigured: boolean,
   githubStatus: GitHubConnectivityStatus,
+  runners: RunnerCounts,
 ): string {
   const parts: string[] = [];
 
@@ -362,7 +404,9 @@ function generateMessage(
   ).length;
 
   if (status === "ready") {
-    return presets.length === 1 ? "All presets ready" : `All ${presets.length} presets ready`;
+    const base = presets.length === 1 ? "All presets ready" : `All ${presets.length} presets ready`;
+    const runnerSuffix = formatRunnerContext(runners);
+    return runnerSuffix ? `${base}, ${runnerSuffix}` : base;
   }
 
   if (buildingCount > 0) {
@@ -381,7 +425,9 @@ function generateMessage(
     parts.unshift(`${readyCount} preset${readyCount > 1 ? "s" : ""} ready`);
   }
 
-  return parts.join(", ");
+  const msg = parts.join(", ");
+  const runnerSuffix = formatRunnerContext(runners);
+  return runnerSuffix ? `${msg}, ${runnerSuffix}` : msg;
 }
 
 /**
@@ -393,11 +439,42 @@ export async function handler(
   console.log("Status API request received");
 
   try {
-    // Check configuration and AMI states in parallel
-    let [privateKeyConfigured, amiStates] = await Promise.all([
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+    const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+
+    // Check configuration, AMI states, and runner counts in parallel
+    let [
+      privateKeyConfigured,
+      amiStates,
+      pendingCount,
+      provisioningCount,
+      runningCount,
+      completedLastHour,
+      failedLastHour,
+      completedLast24h,
+      failedLast24h,
+    ] = await Promise.all([
       isPrivateKeyConfigured(),
       queryAllAmiStates(),
+      countRunnersByStatus("pending"),
+      countRunnersByStatus("provisioning"),
+      countRunnersByStatus("running"),
+      countRunnersByStatusSince("completed", oneHourAgo),
+      countRunnersByStatusSince("failed", oneHourAgo),
+      countRunnersByStatusSince("completed", twentyFourHoursAgo),
+      countRunnersByStatusSince("failed", twentyFourHoursAgo),
     ]);
+
+    const runners: RunnerCounts = {
+      pending: pendingCount,
+      provisioning: provisioningCount,
+      running: runningCount,
+    };
+    const recentActivity: RecentActivity = {
+      lastHour: { completed: completedLastHour, failed: failedLastHour },
+      last24Hours: { completed: completedLast24h, failed: failedLast24h },
+    };
 
     console.log(`AMI states: ${amiStates.map((s) => `${s.presetName}=${s.status}${s.amiId ? `(${s.amiId})` : ""}`).join(", ") || "none"}`);
 
@@ -437,7 +514,7 @@ export async function handler(
 
     // Aggregate status
     const status = aggregateStatus(amiStates, privateKeyConfigured, githubStatus);
-    const message = generateMessage(amiStates, status, privateKeyConfigured, githubStatus);
+    const message = generateMessage(amiStates, status, privateKeyConfigured, githubStatus, runners);
 
     const response: StatusResponse = {
       status,
@@ -446,6 +523,8 @@ export async function handler(
       },
       github: githubStatus,
       presets,
+      runners,
+      recentActivity,
       message,
     };
 

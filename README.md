@@ -235,7 +235,16 @@ curl https://<api-url>/status
       "updatedAt": "2026-01-27T11:30:00Z"
     }
   ],
-  "message": "1 preset ready, 1 preset building"
+  "runners": {
+    "pending": 1,
+    "provisioning": 0,
+    "running": 2
+  },
+  "recentActivity": {
+    "lastHour": { "completed": 5, "failed": 0 },
+    "last24Hours": { "completed": 42, "failed": 1 }
+  },
+  "message": "1 preset ready, 1 preset building, 1 pending / 2 running"
 }
 ```
 
