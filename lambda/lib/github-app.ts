@@ -167,14 +167,6 @@ export function validateWebhookSignature(
     "sha256=" +
     crypto.createHmac("sha256", secret).update(payloadBuffer).digest("hex");
 
-  console.log("Signature validation debug:", JSON.stringify({
-    receivedPrefix: signature.substring(0, 15),
-    expectedPrefix: expectedSignature.substring(0, 15),
-    receivedLength: signature.length,
-    expectedLength: expectedSignature.length,
-    payloadBytes: payloadBuffer.length,
-  }));
-
   // Use timing-safe comparison to prevent timing attacks
   try {
     return crypto.timingSafeEqual(

@@ -87,7 +87,7 @@ interface WorkflowJobPayload {
 export async function handler(
   event: APIGatewayProxyEvent
 ): Promise<APIGatewayProxyResult> {
-  console.log("Received webhook event");
+  console.log("Received webhook event: ", JSON.stringify(event));
 
   try {
     // Decode body if API Gateway base64-encoded it, so we validate the same
@@ -96,18 +96,15 @@ export async function handler(
       ? Buffer.from(event.body ?? "", "base64").toString("utf-8")
       : event.body ?? "";
 
-    // Validate webhook signature
-    const signature = event.headers["x-hub-signature-256"];
-    const webhookSecret = await getWebhookSecret();
+    // API Gateway REST API preserves original header casing, so use
+    // case-insensitive lookup for all GitHub headers.
+    const headers = Object.fromEntries(
+      Object.entries(event.headers).map(([k, v]) => [k.toLowerCase(), v])
+    );
 
-    console.log("Webhook signature debug:", JSON.stringify({
-      isBase64Encoded: event.isBase64Encoded,
-      bodyLength: rawBody.length,
-      signatureHeader: signature ?? "(missing)",
-      secretLength: webhookSecret.length,
-      secretPrefix: webhookSecret.substring(0, 4),
-      bodyPrefix: rawBody.substring(0, 50),
-    }));
+    // Validate webhook signature
+    const signature = headers["x-hub-signature-256"];
+    const webhookSecret = await getWebhookSecret();
 
     if (!validateWebhookSignature(rawBody, signature, webhookSecret)) {
       console.error("Invalid webhook signature");
@@ -119,7 +116,7 @@ export async function handler(
 
     // Parse payload
     const payload = JSON.parse(rawBody || "{}") as WorkflowJobPayload;
-    const eventType = event.headers["x-github-event"];
+    const eventType = headers["x-github-event"];
 
     // Only handle workflow_job events
     if (eventType !== "workflow_job") {
