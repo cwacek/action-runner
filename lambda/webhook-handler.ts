@@ -100,6 +100,15 @@ export async function handler(
     const signature = event.headers["x-hub-signature-256"];
     const webhookSecret = await getWebhookSecret();
 
+    console.log("Webhook signature debug:", JSON.stringify({
+      isBase64Encoded: event.isBase64Encoded,
+      bodyLength: rawBody.length,
+      signatureHeader: signature ?? "(missing)",
+      secretLength: webhookSecret.length,
+      secretPrefix: webhookSecret.substring(0, 4),
+      bodyPrefix: rawBody.substring(0, 50),
+    }));
+
     if (!validateWebhookSignature(rawBody, signature, webhookSecret)) {
       console.error("Invalid webhook signature");
       return {
