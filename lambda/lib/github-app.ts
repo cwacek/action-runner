@@ -111,6 +111,7 @@ export async function getInstallationToken(
 
 /**
  * Request a JIT (Just-in-Time) runner registration token.
+ * Uses the org-level endpoint which requires org Self-hosted Runners permission.
  * This token is single-use and short-lived.
  */
 export async function getJitRunnerToken(
@@ -120,7 +121,8 @@ export async function getJitRunnerToken(
   labels: string[]
 ): Promise<{ runner_jit_config: string }> {
   const token = await getInstallationToken(config, installationId);
-  const apiUrl = `${getApiBaseUrl(config.serverUrl)}/repos/${repoFullName}/actions/runners/generate-jitconfig`;
+  const org = repoFullName.split("/")[0];
+  const apiUrl = `${getApiBaseUrl(config.serverUrl)}/orgs/${org}/actions/runners/generate-jitconfig`;
 
   const response = await fetch(apiUrl, {
     method: "POST",
