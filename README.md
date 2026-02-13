@@ -90,36 +90,7 @@ aws secretsmanager put-secret-value \
 
 The app stack contains all application resources (API Gateway, Lambdas, DynamoDB, Image Builder). It requires the GitHub App ID and server URL, passed via CDK context or environment variables.
 
-Edit `bin/app.ts` to configure your runner presets:
-
-```typescript
-const foundation = new SpotRunnerFoundationStack(app, "SpotRunnerFoundationStack", {
-  env,
-});
-
-new SpotRunnerStack(app, "SpotRunnerStack", {
-  env,
-  vpc: foundation.vpc,
-  runnerSecurityGroup: foundation.runnerSecurityGroup,
-  privateKeySecret: foundation.privateKeySecret,
-  githubServerUrl,  // from CDK context or GITHUB_SERVER_URL env var
-  githubAppId,      // from CDK context or GITHUB_APP_ID env var
-  presets: [
-    {
-      name: "linux-x64",
-      architecture: "x86_64",
-      instanceTypes: ["m5.large", "m5.xlarge", "m5a.large", "m5a.xlarge"],
-      labels: ["linux", "ubuntu"],
-    },
-    {
-      name: "linux-arm64",
-      architecture: "arm64",
-      instanceTypes: ["m6g.large", "m6g.xlarge"],
-      labels: ["linux", "ubuntu", "arm"],
-    },
-  ],
-});
-```
+Edit `bin/app.ts` to configure your runner presets if you want.
 
 Deploy the app stack:
 
@@ -158,6 +129,8 @@ curl https://xxx.execute-api.us-east-1.amazonaws.com/prod/status
 ```json
 {
   "status": "building",
+  "configuration": { "privateKeyConfigured": true },
+  "github": { "status": "connected", "message": "GitHub API authentication successful", "appSlug": "spot-runner" },
   "presets": [
     { "name": "linux-x64", "status": "building", "amiId": null, "updatedAt": "..." }
   ],
@@ -245,7 +218,9 @@ curl https://<api-url>/status
 **Response:**
 ```json
 {
-  "status": "ready",
+  "status": "building",
+  "configuration": { "privateKeyConfigured": true },
+  "github": { "status": "connected", "message": "GitHub API authentication successful", "appSlug": "spot-runner" },
   "presets": [
     {
       "name": "linux-x64",
