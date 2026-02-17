@@ -232,7 +232,7 @@ export async function handler(
         labels,
         config,
         resources,
-        jitConfig: jitResponse.runner_jit_config,
+        jitConfig: jitResponse.encoded_jit_config,
         launchTemplateId: LAUNCH_TEMPLATE_ID,
         subnetIds: SUBNET_IDS,
         securityGroupIds: SECURITY_GROUP_IDS,

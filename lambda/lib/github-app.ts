@@ -154,7 +154,7 @@ export async function getJitRunnerToken(
   installationId: number,
   repoFullName: string,
   labels: string[]
-): Promise<{ runner_jit_config: string }> {
+): Promise<{ encoded_jit_config: string }> {
   const token = await getInstallationToken(config, installationId);
   const apiBaseUrl = getApiBaseUrl(config.serverUrl);
   const [owner] = repoFullName.split("/");
@@ -185,7 +185,7 @@ export async function getJitRunnerToken(
     throw new Error(`Failed to get JIT runner token: ${response.status} ${body}`);
   }
 
-  return (await response.json()) as { runner_jit_config: string };
+  return (await response.json()) as { encoded_jit_config: string };
 }
 
 /**

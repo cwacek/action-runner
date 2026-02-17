@@ -3,6 +3,8 @@ import {
   generateAppJwt,
   validateWebhookSignature,
   getInstallationIdFromPayload,
+  getJitRunnerToken,
+  GitHubAppConfig,
 } from "../lambda/lib/github-app";
 
 // Test RSA key pair (DO NOT use in production)
@@ -115,6 +117,139 @@ describe("GitHub App", () => {
       const payload = { action: "queued" };
 
       expect(getInstallationIdFromPayload(payload)).toBeNull();
+    });
+  });
+
+  describe("getJitRunnerToken", () => {
+    const appConfig: GitHubAppConfig = {
+      appId: "123456",
+      privateKey: TEST_PRIVATE_KEY,
+      webhookSecret: "test-secret",
+      serverUrl: "https://github.com",
+    };
+
+    let fetchSpy: jest.SpyInstance;
+
+    afterEach(() => {
+      fetchSpy?.mockRestore();
+    });
+
+    test("parses encoded_jit_config from GitHub API response", async () => {
+      const jitConfig = "base64-encoded-jit-config-value";
+
+      fetchSpy = jest.spyOn(global, "fetch").mockImplementation(async (url) => {
+        const urlStr = url.toString();
+
+        // Mock installation token request
+        if (urlStr.includes("/app/installations/")) {
+          return new Response(JSON.stringify({ token: "test-token", expires_at: new Date(Date.now() + 3600000).toISOString() }), { status: 200 });
+        }
+
+        // Mock owner type lookup
+        if (urlStr.match(/\/users\/[^/]+$/)) {
+          return new Response(JSON.stringify({ type: "User" }), { status: 200 });
+        }
+
+        // Mock JIT config endpoint
+        if (urlStr.includes("/actions/runners/generate-jitconfig")) {
+          return new Response(JSON.stringify({
+            runner: { id: 1, name: "spot-runner-123" },
+            encoded_jit_config: jitConfig,
+          }), { status: 200 });
+        }
+
+        return new Response("Not found", { status: 404 });
+      });
+
+      const result = await getJitRunnerToken(appConfig, 12345, "testuser/testrepo", ["self-hosted"]);
+      expect(result.encoded_jit_config).toBe(jitConfig);
+    });
+
+    test("throws on API error response", async () => {
+      fetchSpy = jest.spyOn(global, "fetch").mockImplementation(async (url) => {
+        const urlStr = url.toString();
+
+        if (urlStr.includes("/app/installations/")) {
+          return new Response(JSON.stringify({ token: "test-token", expires_at: new Date(Date.now() + 3600000).toISOString() }), { status: 200 });
+        }
+
+        if (urlStr.match(/\/users\/[^/]+$/)) {
+          return new Response(JSON.stringify({ type: "User" }), { status: 200 });
+        }
+
+        if (urlStr.includes("/actions/runners/generate-jitconfig")) {
+          return new Response(JSON.stringify({ message: "Resource not accessible by integration" }), { status: 403 });
+        }
+
+        return new Response("Not found", { status: 404 });
+      });
+
+      await expect(getJitRunnerToken(appConfig, 12345, "testuser/testrepo", ["self-hosted"]))
+        .rejects.toThrow("Failed to get JIT runner token: 403");
+    });
+
+    test("uses org endpoint for organizations", async () => {
+      const requestedUrls: string[] = [];
+
+      fetchSpy = jest.spyOn(global, "fetch").mockImplementation(async (url) => {
+        const urlStr = url.toString();
+        requestedUrls.push(urlStr);
+
+        if (urlStr.includes("/app/installations/")) {
+          return new Response(JSON.stringify({ token: "test-token", expires_at: new Date(Date.now() + 3600000).toISOString() }), { status: 200 });
+        }
+
+        if (urlStr.match(/\/users\/[^/]+$/)) {
+          return new Response(JSON.stringify({ type: "Organization" }), { status: 200 });
+        }
+
+        if (urlStr.includes("/actions/runners/generate-jitconfig")) {
+          return new Response(JSON.stringify({
+            runner: { id: 1, name: "spot-runner-123" },
+            encoded_jit_config: "jit-config",
+          }), { status: 200 });
+        }
+
+        return new Response("Not found", { status: 404 });
+      });
+
+      await getJitRunnerToken(appConfig, 12345, "myorg/testrepo", ["self-hosted"]);
+
+      const jitUrl = requestedUrls.find((u) => u.includes("generate-jitconfig"));
+      expect(jitUrl).toContain("/orgs/myorg/");
+      expect(jitUrl).not.toContain("/repos/");
+    });
+
+    test("uses repo endpoint for user accounts", async () => {
+      const requestedUrls: string[] = [];
+
+      fetchSpy = jest.spyOn(global, "fetch").mockImplementation(async (url) => {
+        const urlStr = url.toString();
+        requestedUrls.push(urlStr);
+
+        if (urlStr.includes("/app/installations/")) {
+          return new Response(JSON.stringify({ token: "test-token", expires_at: new Date(Date.now() + 3600000).toISOString() }), { status: 200 });
+        }
+
+        if (urlStr.match(/\/users\/[^/]+$/)) {
+          return new Response(JSON.stringify({ type: "User" }), { status: 200 });
+        }
+
+        if (urlStr.includes("/actions/runners/generate-jitconfig")) {
+          return new Response(JSON.stringify({
+            runner: { id: 1, name: "spot-runner-123" },
+            encoded_jit_config: "jit-config",
+          }), { status: 200 });
+        }
+
+        return new Response("Not found", { status: 404 });
+      });
+
+      await getJitRunnerToken(appConfig, 12345, "someuser/testrepo", ["self-hosted"]);
+
+      const jitUrl = requestedUrls.find((u) => u.includes("generate-jitconfig"));
+      expect(jitUrl).toContain("/repos/someuser/testrepo/");
+      expect(jitUrl).not.toContain("/orgs/");
     });
   });
 });
