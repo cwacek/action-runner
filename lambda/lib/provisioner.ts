@@ -87,7 +87,7 @@ if [ ! -f "$RUNNER_DIR/run.sh" ]; then
     echo "Expected: \$EXPECTED_SHA"
     echo "Actual: \$ACTUAL_SHA"
     rm -f runner.tar.gz
-    aws ec2 terminate-instances --instance-ids \$INSTANCE_ID --region \$REGION
+    shutdown -h now
     exit 1
   fi
   echo "SHA256 verified successfully"
@@ -100,12 +100,13 @@ cd "$RUNNER_DIR"
 # Write JIT config
 echo '${jitConfig}' | base64 -d > .jitconfig
 
-# Spot interruption handler
+# Spot interruption handler — check HTTP status code, not body
 (
   while true; do
     TOKEN=$(get_imds_token)
-    ACTION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" "$METADATA_URL/meta-data/spot/instance-action" 2>/dev/null || echo "")
-    if [ -n "$ACTION" ] && [ "$ACTION" != "404" ]; then
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-aws-ec2-metadata-token: $TOKEN" "$METADATA_URL/meta-data/spot/instance-action" 2>/dev/null || echo "000")
+    if [ "$HTTP_CODE" = "200" ]; then
+      ACTION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" "$METADATA_URL/meta-data/spot/instance-action" 2>/dev/null)
       echo "SPOT INTERRUPTION: $ACTION"
       pkill -TERM -f "Runner.Listener" || true
       sleep 90
@@ -124,13 +125,17 @@ TIMEOUT_SECONDS=${timeout}
   echo "TIMEOUT: $TIMEOUT_SECONDS seconds reached"
   pkill -TERM -f "Runner.Listener" || true
   sleep 30
-  aws ec2 terminate-instances --instance-ids $INSTANCE_ID --region $REGION
+  shutdown -h now
 ) &
 TIMEOUT_PID=$!
 
-# Run the runner
+# Create runner user if it doesn't exist
+id -u runner &>/dev/null || useradd -m -d /home/runner runner
+chown -R runner:runner "$RUNNER_DIR"
+
+# Run the runner as non-root (GitHub runner refuses to run as root)
 echo "Starting runner..."
-./run.sh --jitconfig .jitconfig
+sudo -u runner -- ./run.sh --jitconfig .jitconfig
 RUNNER_EXIT=$?
 echo "Runner exited: $RUNNER_EXIT"
 
@@ -138,9 +143,9 @@ echo "Runner exited: $RUNNER_EXIT"
 kill $SPOT_HANDLER_PID $TIMEOUT_PID 2>/dev/null || true
 rm -f .jitconfig
 
-# Self-terminate
+# Self-terminate via shutdown (cleanup Lambda handles EC2 termination)
 echo "Self-terminating..."
-aws ec2 terminate-instances --instance-ids $INSTANCE_ID --region $REGION
+shutdown -h now
 `;
 
   return Buffer.from(script).toString("base64");
