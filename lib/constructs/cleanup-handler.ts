@@ -58,7 +58,7 @@ export class CleanupHandler extends Construct {
     this.lambda = new lambdaNodejs.NodejsFunction(this, "Function", {
       entry: path.join(__dirname, "../../lambda/cleanup-handler.ts"),
       handler: "handler",
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,

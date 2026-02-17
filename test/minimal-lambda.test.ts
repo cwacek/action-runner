@@ -12,7 +12,7 @@ describe("Minimal Lambda test", () => {
     new lambdaNodejs.NodejsFunction(stack, "Fn", {
       entry: path.join(__dirname, "../lambda/webhook-handler.ts"),
       handler: "handler",
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       bundling: {
         externalModules: ["@aws-sdk/*"],
         forceDockerBundling: false,

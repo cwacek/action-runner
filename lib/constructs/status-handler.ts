@@ -55,7 +55,7 @@ export class StatusHandler extends Construct {
     this.lambda = new lambdaNodejs.NodejsFunction(this, "Function", {
       entry: path.join(__dirname, "../../lambda/status-handler.ts"),
       handler: "handler",
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,

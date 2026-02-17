@@ -10,7 +10,7 @@ describe("Inline Lambda test", () => {
     const app = new cdk.App();
     const stack = new cdk.Stack(app, "Test1");
     new lambda.Function(stack, "Fn", {
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: "index.handler",
       code: lambda.Code.fromInline("exports.handler = () => {}"),
     });
@@ -29,7 +29,7 @@ describe("Inline Lambda test", () => {
     new lambdaNodejs.NodejsFunction(stack, "Fn", {
       entry: tmpFile,
       handler: "handler",
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
     });
     Template.fromStack(stack);
     console.log("NodejsFunction tiny: OK");

@@ -40,7 +40,7 @@ export class PresetInitializer extends Construct {
     // Create custom resource provider
     const onEventHandler = new lambda.SingletonFunction(this, "Handler", {
       uuid: "preset-initializer-handler",
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: "index.handler",
       timeout: cdk.Duration.minutes(2),
       code: lambda.Code.fromInline(`
