@@ -259,6 +259,14 @@ export async function provisionRunner(
     const errors = fleetResponse.Errors ?? [];
     if (errors.length > 0) {
       console.error("Fleet creation errors:", errors);
+
+      const slrError = errors.find((e) => e.ErrorCode === "AuthFailure.ServiceLinkedRoleCreationNotPermitted");
+      if (slrError) {
+        console.error(
+          "HINT: The EC2 Spot service-linked role does not exist in this account. " +
+          "Create it with: aws iam create-service-linked-role --aws-service-name spot.amazonaws.com"
+        );
+      }
     }
 
     // If spot failed and strategy allows fallback, try on-demand

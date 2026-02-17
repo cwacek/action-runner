@@ -32,6 +32,10 @@ Spot Runner provisions ephemeral EC2 spot instances on-demand when GitHub Action
 ### Prerequisites
 
 - AWS account with CDK bootstrapped
+- EC2 Spot service-linked role (create once per account if not already present):
+  ```bash
+  aws iam create-service-linked-role --aws-service-name spot.amazonaws.com
+  ```
 - GitHub Enterprise Server with admin access
 - Node.js 18+ and npm
 
