@@ -109,9 +109,44 @@ export async function getInstallationToken(
   return data.token;
 }
 
+// Cache owner type lookups for the Lambda invocation lifetime
+const ownerTypeCache = new Map<string, "User" | "Organization">();
+
+/**
+ * Determine whether a GitHub owner is a User or Organization.
+ * Results are cached for the Lambda invocation lifetime.
+ */
+async function getOwnerType(
+  apiBaseUrl: string,
+  owner: string,
+  token: string
+): Promise<"User" | "Organization"> {
+  const cached = ownerTypeCache.get(owner);
+  if (cached) return cached;
+
+  const response = await fetch(`${apiBaseUrl}/users/${owner}`, {
+    headers: {
+      Authorization: `token ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+
+  if (!response.ok) {
+    console.warn(`Failed to look up owner type for ${owner} (${response.status}), defaulting to Organization`);
+    return "Organization";
+  }
+
+  const data = (await response.json()) as { type?: string };
+  const ownerType = data.type === "User" ? "User" : "Organization";
+  ownerTypeCache.set(owner, ownerType);
+  console.log(`Owner ${owner} is type: ${ownerType}`);
+  return ownerType;
+}
+
 /**
  * Request a JIT (Just-in-Time) runner registration token.
- * Uses the org-level endpoint which requires org Self-hosted Runners permission.
+ * Uses org endpoint for organizations, repo endpoint for user-owned repos.
  * This token is single-use and short-lived.
  */
 export async function getJitRunnerToken(
@@ -121,8 +156,13 @@ export async function getJitRunnerToken(
   labels: string[]
 ): Promise<{ runner_jit_config: string }> {
   const token = await getInstallationToken(config, installationId);
-  const org = repoFullName.split("/")[0];
-  const apiUrl = `${getApiBaseUrl(config.serverUrl)}/orgs/${org}/actions/runners/generate-jitconfig`;
+  const apiBaseUrl = getApiBaseUrl(config.serverUrl);
+  const [owner] = repoFullName.split("/");
+
+  const ownerType = await getOwnerType(apiBaseUrl, owner, token);
+  const apiUrl = ownerType === "Organization"
+    ? `${apiBaseUrl}/orgs/${owner}/actions/runners/generate-jitconfig`
+    : `${apiBaseUrl}/repos/${repoFullName}/actions/runners/generate-jitconfig`;
 
   const response = await fetch(apiUrl, {
     method: "POST",
