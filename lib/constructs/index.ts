@@ -3,6 +3,7 @@ export * from "./launch-template";
 export * from "./webhook-handler";
 export * from "./cleanup-handler";
 export * from "./runner-image-pipeline";
+export * from "./windows-image-pipeline";
 export * from "./ami-update-handler";
 export * from "./status-handler";
 export * from "./preset-initializer";

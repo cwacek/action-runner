@@ -14,6 +14,7 @@ import {
   AmiUpdateHandler,
   StatusHandler,
   RunnerImagePipeline,
+  WindowsImagePipeline,
   PresetInitializer,
 } from "./constructs";
 
@@ -64,6 +65,14 @@ export interface RunnerPreset {
    * @default "spotPreferred"
    */
   readonly spotStrategy?: "spotOnly" | "spotPreferred" | "onDemandOnly";
+
+  /**
+   * OS platform for the runner image.
+   * Determines which Image Builder pipeline is created.
+   * Windows presets only support x86_64 architecture.
+   * @default "linux"
+   */
+  readonly platform?: "linux" | "windows";
 }
 
 export interface SpotRunnerStackProps extends cdk.StackProps {
@@ -146,6 +155,24 @@ function validatePresets(presets: RunnerPreset[]): void {
         `Invalid architecture "${preset.architecture}" for preset "${preset.name}". ` +
         `Must be one of: ${validArchitectures.join(", ")}`
       );
+    }
+  }
+
+  // Windows-specific validations
+  for (const preset of presets) {
+    if (preset.platform === "windows") {
+      if (preset.architecture === "arm64") {
+        throw new Error(
+          `Preset "${preset.name}" specifies platform "windows" with architecture "arm64". ` +
+          `Windows arm64 is not supported on EC2. Use architecture "x86_64" for Windows presets.`
+        );
+      }
+      if (preset.additionalDockerImages && preset.additionalDockerImages.length > 0) {
+        throw new Error(
+          `Preset "${preset.name}" specifies platform "windows" with additionalDockerImages. ` +
+          `Docker is not supported on Windows presets.`
+        );
+      }
     }
   }
 }
@@ -287,6 +314,7 @@ export class SpotRunnerStack extends cdk.Stack {
 
     // Create SSM parameters and Image Builder pipelines for each preset
     for (const preset of props.presets) {
+      const platform = preset.platform ?? "linux";
       const defaultInstanceTypes = preset.architecture === "arm64"
         ? ["m6g.large", "m6g.xlarge"]
         : ["m5.large", "m5.xlarge"];
@@ -297,10 +325,11 @@ export class SpotRunnerStack extends cdk.Stack {
         diskSizeGb: preset.diskSizeGb ?? 100,
         spotStrategy: preset.spotStrategy ?? "spotPreferred",
         timeout: (preset.timeout ?? jobTimeout) * 60,
+        platform,
         labels: [
           "self-hosted",
           preset.architecture === "arm64" ? "ARM64" : "X64",
-          "Linux",
+          platform === "windows" ? "Windows" : "Linux",
           ...(preset.labels ?? []),
         ],
       };
@@ -311,14 +340,20 @@ export class SpotRunnerStack extends cdk.Stack {
         description: `Runner configuration for preset: ${preset.name}`,
       });
 
-      // Create Image Builder pipeline for this preset
-      const imagePipeline = new RunnerImagePipeline(this, `ImagePipeline-${preset.name}`, {
-        vpc: this.vpc,
-        subnet: buildSubnet,
-        presetName: preset.name,
-        architecture: preset.architecture,
-        additionalDockerImages: preset.additionalDockerImages,
-      });
+      // Create Image Builder pipeline — Linux or Windows based on platform
+      const imagePipeline = platform === "windows"
+        ? new WindowsImagePipeline(this, `ImagePipeline-${preset.name}`, {
+            vpc: this.vpc,
+            subnet: buildSubnet,
+            presetName: preset.name,
+          })
+        : new RunnerImagePipeline(this, `ImagePipeline-${preset.name}`, {
+            vpc: this.vpc,
+            subnet: buildSubnet,
+            presetName: preset.name,
+            architecture: preset.architecture,
+            additionalDockerImages: preset.additionalDockerImages,
+          });
 
       // Initialize preset state and trigger pipeline build
       new PresetInitializer(this, `PresetInit-${preset.name}`, {
